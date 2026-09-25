@@ -138,12 +138,14 @@ def main():
         return
 
     # Modo Padrão Completo: Monitor em Thread + Servidor Web
-    display_host = "localhost" if args.host == "0.0.0.0" else args.host
-    print(f"[*] Servidor Web: http://{display_host}:{args.port}")
+    local_ip = web_server.get_local_ip()
+    print(f"[*] Painel web neste computador:   http://localhost:{args.port}")
+    if local_ip != "127.0.0.1":
+        print(f"[*] Painel web em outros aparelhos: http://{local_ip}:{args.port} (celular, notebook, etc)")
     print(f"[*] Checagem de conectividade: a cada {args.ping_interval} segundos")
-    print(f"[*] Teste de velocidade completo: a cada {args.speed_interval} minutos (e na detecção de instabilidade)")
-    print(f"[*] Pressione CTRL+C a qualquer momento para encerrar com segurança.")
-    print("-" * 70)
+    print(f"[*] Teste de velocidade completo: a cada {args.speed_interval} minutos (e na deteccao de instabilidade)")
+    print(f"[*] Pressione CTRL+C a qualquer momento para encerrar com seguranca.")
+    print("-" * 60)
 
     monitor_thread = threading.Thread(
         target=monitor.run_monitor_loop,

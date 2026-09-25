@@ -179,12 +179,29 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
         self.send_error(404, "Endpoint não encontrado")
 
 
+def get_local_ip() -> str:
+    """Detecta o IP da maquina na rede local."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+
 def start_server(host: str = "0.0.0.0", port: int = 8080):
     """Inicia o servidor web HTTP leve."""
     db.init_db()
     server = ThreadingHTTPServer((host, port), NetworkMonitorHandler)
-    display_host = "localhost" if host == "0.0.0.0" else host
-    print(f"🌐 Servidor Web ativo em: http://{display_host}:{port}")
+    local_ip = get_local_ip()
+    print(f"Servidor Web ativo:")
+    print(f"  Local:   http://localhost:{port}")
+    if local_ip != "127.0.0.1":
+        print(f"  Rede:    http://{local_ip}:{port} (qualquer aparelho no mesmo Wi-Fi/cabo)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
