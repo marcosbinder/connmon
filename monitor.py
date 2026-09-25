@@ -34,8 +34,22 @@ _last_speed_test_time = 0.0
 _is_running = True
 
 
+def tcp_ping(host: str, port: int = 53, timeout: float = 1.2) -> Optional[float]:
+    """Mede a latencia de handshake TCP como fallback caso ICMP ping falhe."""
+    try:
+        start = time.perf_counter()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        duration = (time.perf_counter() - start) * 1000.0
+        s.close()
+        return round(duration, 1)
+    except Exception:
+        return None
+
+
 def ping_host(host: str, count: int = 2, timeout_ms: int = 1000) -> Dict[str, Any]:
-    """Executa ping multiplataforma (Windows e Linux) para um host específico."""
+    """Executa ping multiplataforma (Windows e Linux) para um host especifico."""
     is_win = platform.system().lower() == "windows"
     param = "-n" if is_win else "-c"
     timeout_param = "-w" if is_win else "-W"
@@ -52,23 +66,48 @@ def ping_host(host: str, count: int = 2, timeout_ms: int = 1000) -> Dict[str, An
         )
         
         # Extrai perda de pacotes (PT e EN)
-        loss_match = re.search(r"(\d+(?:\.\d+)?)%\s*(?:loss|perda|de perda)", res.stdout, re.IGNORECASE)
+        loss_match = re.search(r"(\d+(?:\.\d+)?)%\s*(?:packet loss|loss|perda|de perda)", res.stdout, re.IGNORECASE)
         packet_loss = float(loss_match.group(1)) if loss_match else None
 
-        # Extrai latência em ms (tempo=XXms ou time=XXms)
-        times = [float(x) for x in re.findall(r"(?:time|tempo)[=<](\d+(?:\.\d+)?)ms", res.stdout, re.IGNORECASE)]
+        # Extrai latência em ms (suporta 'time=14.2 ms' no Linux e 'tempo=15ms' no Windows)
+        times = [float(x) for x in re.findall(r"(?:time|tempo)[=<](\d+(?:\.\d+)?)\s*ms", res.stdout, re.IGNORECASE)]
         avg_latency = round(sum(times) / len(times), 1) if times else None
+
+        # Fallback 1: Linha de sumario do Linux (rtt min/avg/max/mdev = 14.2/15.1/...)
+        if avg_latency is None:
+            rtt_match = re.search(r"(?:rtt|round-trip) min/avg/max/(?:mdev|stddev) = [\d.]+/([\d.]+)/", res.stdout)
+            if rtt_match:
+                avg_latency = round(float(rtt_match.group(1)), 1)
+
+        # Fallback 2: Linha de sumario do Windows (Media = 15ms / Average = 15ms)
+        if avg_latency is None:
+            win_match = re.search(r"(?:Média|Media|Average)\s*=\s*(\d+)ms", res.stdout, re.IGNORECASE)
+            if win_match:
+                avg_latency = float(win_match.group(1))
 
         if packet_loss is None:
             packet_loss = 0.0 if res.returncode == 0 else 100.0
 
         is_online = res.returncode == 0 and packet_loss < 100.0
+
+        # Fallback 3: Se ping respondeu mas latencia nao foi parseada, usa TCP handshake
+        if is_online and avg_latency is None:
+            avg_latency = tcp_ping(host, 53)
+
         return {
             "online": is_online,
             "latency_ms": avg_latency,
             "loss_pct": packet_loss
         }
     except Exception:
+        # Se o comando ping nao existir ou falhar por permissao, testa via TCP
+        tcp_lat = tcp_ping(host, 53)
+        if tcp_lat is not None:
+            return {
+                "online": True,
+                "latency_ms": tcp_lat,
+                "loss_pct": 0.0
+            }
         return {
             "online": False,
             "latency_ms": None,
