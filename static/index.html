@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetMon: Monitor de Conexao</title>
+    <!-- Chart.js via CDN com fallback gracioso -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-card: #1e293b;
+            --border-color: #334155;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-blue: #38bdf8;
+            --accent-green: #22c55e;
+            --accent-yellow: #eab308;
+            --accent-red: #ef4444;
+            --accent-purple: #a855f7;
+            --card-radius: 12px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* Top Bar */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 20px;
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-title h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .isp-badge {
+            background: #ef4444;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--accent-green);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        .status-badge.instable {
+            background: rgba(234, 179, 8, 0.15);
+            color: var(--accent-yellow);
+            border-color: rgba(234, 179, 8, 0.3);
+        }
+
+        .status-badge.offline {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+            border-color: rgba(239, 68, 68, 0.5);
+            animation: pulse-border 1.5s infinite;
+        }
+
+        .status-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background-color: currentColor;
+            display: inline-block;
+        }
+
+        @keyframes pulse-border {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+            70% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        button, select {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover, select:hover {
+            border-color: var(--accent-blue);
+            background: #273549;
+        }
+
+        button.btn-primary {
+            background: #2563eb;
+            border-color: #3b82f6;
+            color: white;
+        }
+
+        button.btn-primary:hover {
+            background: #1d4ed8;
+        }
+
+        button.btn-warning {
+            background: #d97706;
+            border-color: #f59e0b;
+            color: white;
+        }
+
+        button.btn-warning:hover {
+            background: #b45309;
+        }
+
+        /* Banner de Queda Ativa */
+        .outage-banner {
+            display: none;
+            background: linear-gradient(90deg, rgba(239, 68, 68, 0.9), rgba(185, 28, 28, 0.9));
+            color: white;
+            padding: 16px 20px;
+            border-radius: var(--card-radius);
+            margin-bottom: 20px;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
+            animation: pulse-banner 2s infinite;
+        }
+
+        @keyframes pulse-banner {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.85; }
+        }
+
+        /* KPI Cards Grid */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .kpi-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-radius);
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .kpi-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--accent-blue);
+        }
+
+        .kpi-card.green::before { background: var(--accent-green); }
+        .kpi-card.yellow::before { background: var(--accent-yellow); }
+        .kpi-card.red::before { background: var(--accent-red); }
+        .kpi-card.purple::before { background: var(--accent-purple); }
+
+        .kpi-label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .kpi-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1.1;
+        }
+
+        .kpi-value span {
+            font-size: 1rem;
+            font-weight: 400;
+            color: var(--text-secondary);
+            margin-left: 4px;
+        }
+
+        .kpi-subtitle {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 8px;
+        }
+
+        /* Charts Section */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        @media (max-width: 980px) {
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .chart-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-radius);
+            padding: 20px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .chart-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .chart-canvas-container {
+            position: relative;
+            height: 280px;
+            width: 100%;
+        }
+
+        /* Outages Table */
+        .table-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--card-radius);
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        th {
+            text-align: left;
+            padding: 10px 14px;
+            color: var(--text-secondary);
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+        }
+
+        td {
+            padding: 12px 14px;
+            border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+            color: var(--text-primary);
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-open {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+        }
+
+        .badge-closed {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--accent-green);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(4px);
+            z-index: 999;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal-card {
+            background: #1e293b;
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            width: 100%;
+            max-width: 800px;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        .modal-header {
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-body {
+            padding: 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .modal-footer {
+            padding: 16px 22px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        pre.report-box {
+            background: #0f172a;
+            border: 1px solid #334155;
+            padding: 16px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: #cbd5e1;
+            white-space: pre-wrap;
+            line-height: 1.5;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        /* Dropdown export */
+        .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            right: 0;
+            background-color: var(--bg-secondary);
+            min-width: 180px;
+            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.4);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            z-index: 10;
+            overflow: hidden;
+        }
+
+        .dropdown-content a {
+            color: var(--text-primary);
+            padding: 10px 16px;
+            text-decoration: none;
+            display: block;
+            font-size: 0.85rem;
+        }
+
+        .dropdown-content a:hover {
+            background-color: #334155;
+        }
+
+        .dropdown:hover .dropdown-content {
+            display: block;
+        }
+
+        footer {
+            text-align: center;
+            padding: 20px 0;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            border-top: 1px solid var(--border-color);
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <!-- Top Bar -->
+    <header>
+        <div class="header-title">
+            <h1>NetMon</h1>
+            <span class="isp-badge" id="ispNameBadge">Provedor</span>
+            <div id="liveStatusBadge" class="status-badge">
+                <span class="status-dot"></span>
+                <span id="liveStatusText">VERIFICANDO...</span>
+            </div>
+        </div>
+
+        <div class="header-actions">
+            <select id="timeRangeSelect" onchange="fetchTimelineMetrics()">
+                <option value="1">Ultima 1 hora</option>
+                <option value="6">Ultimas 6 horas</option>
+                <option value="24" selected>Ultimas 24 horas</option>
+                <option value="72">Ultimos 3 dias</option>
+                <option value="168">Ultimos 7 dias</option>
+            </select>
+
+            <button class="btn-primary" id="btnSpeedtest" onclick="triggerSpeedtest()">
+                Testar Conexao Agora
+            </button>
+
+            <button class="btn-warning" onclick="openReportModal()">
+                Gerar Relatorio para Suporte
+            </button>
+
+            <div class="dropdown">
+                <button>Exportar Dados ▼</button>
+                <div class="dropdown-content">
+                    <a href="/api/export?table=pings" download="historico_pings.csv">Exportar Pings (CSV)</a>
+                    <a href="/api/export?table=speed_tests" download="historico_velocidade.csv">Exportar Velocidades (CSV)</a>
+                    <a href="/api/export?table=outages" download="historico_quedas.csv">Exportar Quedas (CSV)</a>
+                </div>
+            </div>
+
+            <button onclick="openConfigModal()">Configuracoes</button>
+        </div>
+    </header>
+
+    <!-- Outage Banner (Visível apenas se houver queda em andamento) -->
+    <div id="activeOutageBanner" class="outage-banner">
+        <div>
+            <strong>Queda de conexao em andamento</strong>
+            <div id="outageBannerDetails" style="font-size: 0.85rem; margin-top: 4px;">Inicio: --:--:-- | Duracao atual: 0s</div>
+        </div>
+        <span style="font-size: 0.8rem; background: rgba(0,0,0,0.3); padding: 4px 8px; border-radius: 4px;">Gravando dados no banco...</span>
+    </div>
+
+    <!-- KPI Grid -->
+    <div class="kpi-grid">
+        <div class="kpi-card green" id="cardStatus">
+            <div class="kpi-label">Status da Rede</div>
+            <div class="kpi-value" id="kpiStatus">ONLINE</div>
+            <div class="kpi-subtitle" id="kpiLastCheck">Última checagem: há pouco</div>
+        </div>
+
+        <div class="kpi-card" id="cardLatency">
+            <div class="kpi-label">Latência Atual</div>
+            <div class="kpi-value" id="kpiLatency">-- <span>ms</span></div>
+            <div class="kpi-subtitle" id="kpiAvgLatency">Média 24h: -- ms</div>
+        </div>
+
+        <div class="kpi-card" id="cardLoss">
+            <div class="kpi-label">Perda de Pacotes</div>
+            <div class="kpi-value" id="kpiLoss">0.0 <span>%</span></div>
+            <div class="kpi-subtitle" id="kpiDnsStatus">Resolução DNS: OK</div>
+        </div>
+
+        <div class="kpi-card purple" id="cardSpeed">
+            <div class="kpi-label">Última Velocidade Medida</div>
+            <div class="kpi-value" id="kpiDownload">-- <span>Mbps</span></div>
+            <div class="kpi-subtitle" id="kpiUpload">Upload: -- Mbps</div>
+        </div>
+
+        <div class="kpi-card green" id="cardUptime">
+            <div class="kpi-label">Disponibilidade (Uptime 24h)</div>
+            <div class="kpi-value" id="kpiUptime">100 <span>%</span></div>
+            <div class="kpi-subtitle" id="kpiDowntimeTotal">Tempo total fora: 0 min</div>
+        </div>
+
+        <div class="kpi-card red" id="cardOutages">
+            <div class="kpi-label">Interrupções (24h)</div>
+            <div class="kpi-value" id="kpiOutagesCount">0 <span>quedas</span></div>
+            <div class="kpi-subtitle">Catalogadas para ressarcimento</div>
+        </div>
+    </div>
+
+    <!-- Charts Grid -->
+    <div class="charts-grid">
+        <div class="chart-box">
+            <div class="chart-header">
+                <span class="chart-title">Latência e Perda de Pacotes</span>
+                <span style="font-size: 0.75rem; color: var(--text-muted);">Checagens a cada 30s</span>
+            </div>
+            <div class="chart-canvas-container">
+                <canvas id="latencyChart"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-box">
+            <div class="chart-header">
+                <span class="chart-title">Velocidade de Download e Upload (Mbps)</span>
+                <span style="font-size: 0.75rem; color: var(--text-muted);" id="contractedSubtitle">Contratado: 500M</span>
+            </div>
+            <div class="chart-canvas-container">
+                <canvas id="speedChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Outages Table -->
+    <div class="table-box">
+        <div class="table-header">
+            <span class="chart-title">Historico de Quedas</span>
+            <button onclick="fetchOutagesTable()">Atualizar tabela</button>
+        </div>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Status</th>
+                        <th>Inicio da Queda</th>
+                        <th>Fim da Queda</th>
+                        <th>Duracao Total</th>
+                        <th>Causa Identificada</th>
+                        <th>Acoes</th>
+                    </tr>
+                </thead>
+                <tbody id="outagesTableBody">
+                    <tr>
+                        <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 25px;">
+                            Carregando historico de quedas...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <footer>
+        NetMon - Monitor de conexao para servidores e maquinas locais.
+    </footer>
+</div>
+
+<!-- Modal de Relatório para Operadora -->
+<div id="reportModal" class="modal-overlay">
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Relatorio Tecnico para Suporte e Ouvidoria</h3>
+            <button onclick="closeReportModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
+                Texto estruturado para enviar no atendimento da operadora, consumidor.gov ou Anatel para comprovar indisponibilidade e pedir desconto:
+            </p>
+            <pre id="reportContent" class="report-box">Carregando relatorio...</pre>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-primary" id="btnCopyReport" onclick="copyReportText()">
+                Copiar Texto Completo
+            </button>
+            <a id="btnDownloadReport" href="/api/report?hours=72&download=1" download="relatorio_conexao.txt">
+                <button>Baixar Arquivo .TXT</button>
+            </a>
+            <button onclick="closeReportModal()">Fechar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal de Configuração -->
+<div id="configModal" class="modal-overlay">
+    <div class="modal-card" style="max-width: 500px;">
+        <div class="modal-header">
+            <h3>Configuracoes do Provedor e Plano</h3>
+            <button onclick="closeConfigModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div style="margin-bottom: 15px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Nome da Operadora:</label>
+                <input type="text" id="cfgIspName" value="Meu Provedor" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+            </div>
+            <div style="margin-bottom: 15px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Download Contratado (Mbps):</label>
+                <input type="number" id="cfgDown" value="500" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+            </div>
+            <div style="margin-bottom: 15px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Upload Contratado (Mbps):</label>
+                <input type="number" id="cfgUp" value="250" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-primary" onclick="saveConfig()">Salvar Configurações</button>
+            <button onclick="closeConfigModal()">Cancelar</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let latencyChartInstance = null;
+    let speedChartInstance = null;
+    let currentConfig = { isp_name: "Claro", contracted_download_mbps: "500", contracted_upload_mbps: "250" };
+
+    // Formata timestamp ISO para hora local legível
+    function formatTime(isoString) {
+        if (!isoString) return "--";
+        const d = new Date(isoString);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function formatDateTime(isoString) {
+        if (!isoString) return "--";
+        const d = new Date(isoString);
+        return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    // Busca status atual
+    async function fetchStatus() {
+        try {
+            const res = await fetch('/api/status');
+            const data = await res.json();
+            updateKPIs(data);
+        } catch (e) {
+            console.error("Erro ao buscar status:", e);
+        }
+    }
+
+    function updateKPIs(data) {
+        if (data.config) {
+            currentConfig = data.config;
+            document.getElementById('ispNameBadge').innerText = data.config.isp_name || "Claro";
+            document.getElementById('contractedSubtitle').innerText = `Contratado: ${data.config.contracted_download_mbps || 500}M Down / ${data.config.contracted_upload_mbps || 250}M Up`;
+        }
+
+        const badge = document.getElementById('liveStatusBadge');
+        const badgeText = document.getElementById('liveStatusText');
+        const kpiStatus = document.getElementById('kpiStatus');
+        const cardStatus = document.getElementById('cardStatus');
+
+        // Queda ativa banner
+        const outageBanner = document.getElementById('activeOutageBanner');
+        if (data.active_outage) {
+            outageBanner.style.display = 'flex';
+            document.getElementById('outageBannerDetails').innerText = `Início: ${formatDateTime(data.active_outage.start_time)} | Motivo: ${data.active_outage.reason}`;
+            badge.className = 'status-badge offline';
+            badgeText.innerText = 'QUEDA DETECTADA';
+            kpiStatus.innerText = 'FORA DO AR';
+            cardStatus.className = 'kpi-card red';
+        } else {
+            outageBanner.style.display = 'none';
+            const lastPing = data.last_ping;
+            if (lastPing && lastPing.status === 'INSTABLE') {
+                badge.className = 'status-badge instable';
+                badgeText.innerText = 'CONEXÃO INSTÁVEL';
+                kpiStatus.innerText = 'INSTÁVEL';
+                cardStatus.className = 'kpi-card yellow';
+            } else {
+                badge.className = 'status-badge';
+                badgeText.innerText = 'ONLINE';
+                kpiStatus.innerText = 'ONLINE';
+                cardStatus.className = 'kpi-card green';
+            }
+        }
+
+        // Último ping
+        if (data.last_ping) {
+            document.getElementById('kpiLatency').innerHTML = `${data.last_ping.latency_ms || '--'} <span>ms</span>`;
+            document.getElementById('kpiLoss').innerHTML = `${data.last_ping.packet_loss_pct.toFixed(1)} <span>%</span>`;
+            document.getElementById('kpiDnsStatus').innerText = `Resolução DNS: ${data.last_ping.dns_ok ? 'OK' : 'FALHA'}`;
+            document.getElementById('kpiLastCheck').innerText = `Última checagem: ${formatTime(data.last_ping.timestamp)}`;
+        }
+
+        // Última velocidade
+        if (data.last_speed) {
+            document.getElementById('kpiDownload').innerHTML = `${data.last_speed.download_mbps || '--'} <span>Mbps</span>`;
+            document.getElementById('kpiUpload').innerText = `Upload: ${data.last_speed.upload_mbps || '--'} Mbps (${formatTime(data.last_speed.timestamp)})`;
+        }
+
+        // Estatísticas 24h
+        if (data.stats_24h) {
+            document.getElementById('kpiUptime').innerHTML = `${data.stats_24h.uptime_pct.toFixed(1)} <span>%</span>`;
+            const downMin = Math.round(data.stats_24h.total_downtime_seconds / 60);
+            document.getElementById('kpiDowntimeTotal').innerText = `Tempo total fora: ${downMin} min (${data.stats_24h.total_downtime_seconds.toFixed(0)}s)`;
+            document.getElementById('kpiAvgLatency').innerText = `Média 24h: ${data.stats_24h.avg_latency_ms} ms`;
+            document.getElementById('kpiOutagesCount').innerHTML = `${data.stats_24h.total_outages} <span>quedas</span>`;
+        }
+    }
+
+    // Busca métricas para os gráficos
+    async function fetchTimelineMetrics() {
+        const hours = document.getElementById('timeRangeSelect').value;
+        try {
+            const res = await fetch(`/api/metrics?hours=${hours}`);
+            const data = await res.json();
+            renderLatencyChart(data.pings || []);
+            renderSpeedChart(data.speeds || []);
+        } catch (e) {
+            console.error("Erro ao buscar métricas:", e);
+        }
+    }
+
+    function renderLatencyChart(pings) {
+        const ctx = document.getElementById('latencyChart').getContext('2d');
+        const labels = pings.map(p => formatTime(p.timestamp));
+        const latencies = pings.map(p => p.latency_ms);
+        const losses = pings.map(p => p.packet_loss_pct);
+
+        if (latencyChartInstance) {
+            latencyChartInstance.data.labels = labels;
+            latencyChartInstance.data.datasets[0].data = latencies;
+            latencyChartInstance.data.datasets[1].data = losses;
+            latencyChartInstance.update('none'); // Update sem recalcular animações pesadas
+            return;
+        }
+
+        latencyChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Latência (ms)',
+                        data: latencies,
+                        borderColor: '#38bdf8',
+                        backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.2,
+                        pointRadius: pings.length > 100 ? 0 : 2,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Perda de Pacotes (%)',
+                        data: losses,
+                        borderColor: '#ef4444',
+                        backgroundColor: 'rgba(239, 68, 68, 0.3)',
+                        borderWidth: 1.5,
+                        fill: false,
+                        pointRadius: losses.map(l => l > 0 ? 3 : 0),
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: {
+                        grid: { color: '#334155' },
+                        ticks: { color: '#94a3b8', maxTicksLimit: 8 }
+                    },
+                    y: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        grid: { color: '#334155' },
+                        ticks: { color: '#38bdf8' },
+                        title: { display: true, text: 'Latência (ms)', color: '#38bdf8' }
+                    },
+                    y1: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        min: 0,
+                        max: 100,
+                        grid: { drawOnChartArea: false },
+                        ticks: { color: '#ef4444' },
+                        title: { display: true, text: 'Perda (%)', color: '#ef4444' }
+                    }
+                },
+                plugins: {
+                    legend: { labels: { color: '#f8fafc' } }
+                }
+            }
+        });
+    }
+
+    function renderSpeedChart(speeds) {
+        const ctx = document.getElementById('speedChart').getContext('2d');
+        const labels = speeds.map(s => formatTime(s.timestamp));
+        const downloads = speeds.map(s => s.download_mbps);
+        const uploads = speeds.map(s => s.upload_mbps);
+        const contracted = parseFloat(currentConfig.contracted_download_mbps) || 500;
+        const contractedLine = speeds.map(() => contracted);
+
+        if (speedChartInstance) {
+            speedChartInstance.data.labels = labels;
+            speedChartInstance.data.datasets[0].data = downloads;
+            speedChartInstance.data.datasets[1].data = uploads;
+            speedChartInstance.data.datasets[2].data = contractedLine;
+            speedChartInstance.update('none');
+            return;
+        }
+
+        speedChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Download (Mbps)',
+                        data: downloads,
+                        borderColor: '#22c55e',
+                        backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.2,
+                        pointRadius: 4,
+                        fill: true
+                    },
+                    {
+                        label: 'Upload (Mbps)',
+                        data: uploads,
+                        borderColor: '#a855f7',
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        tension: 0.2,
+                        pointRadius: 4
+                    },
+                    {
+                        label: 'Contratado (' + contracted + 'M)',
+                        data: contractedLine,
+                        borderColor: '#64748b',
+                        borderDash: [5, 5],
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: {
+                        grid: { color: '#334155' },
+                        ticks: { color: '#94a3b8', maxTicksLimit: 8 }
+                    },
+                    y: {
+                        grid: { color: '#334155' },
+                        ticks: { color: '#f8fafc' },
+                        title: { display: true, text: 'Mbps', color: '#f8fafc' }
+                    }
+                },
+                plugins: {
+                    legend: { labels: { color: '#f8fafc' } }
+                }
+            }
+        });
+    }
+
+    // Tabela de Quedas
+    async function fetchOutagesTable() {
+        try {
+            const res = await fetch('/api/outages?limit=50');
+            const outages = await res.json();
+            const tbody = document.getElementById('outagesTableBody');
+
+            if (!outages || outages.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--accent-green); padding: 20px;">🎉 Nenhuma queda de conexão registrada! Rede 100% estável.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = outages.map(o => {
+                const isOpen = o.status === 'OPEN';
+                const statusBadge = isOpen 
+                    ? `<span class="badge badge-open">QUEDA ATIVA</span>` 
+                    : `<span class="badge badge-closed">CONCLUÍDA</span>`;
+                
+                const startStr = formatDateTime(o.start_time);
+                const endStr = o.end_time ? formatDateTime(o.end_time) : '<span style="color:var(--accent-red)">EM ANDAMENTO</span>';
+                
+                let durStr = '--';
+                if (o.duration_seconds !== null && o.duration_seconds !== undefined) {
+                    const sec = Math.round(o.duration_seconds);
+                    durStr = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
+                }
+
+                return `
+                    <tr>
+                        <td>${statusBadge}</td>
+                        <td><strong>${startStr}</strong></td>
+                        <td>${endStr}</td>
+                        <td><strong>${durStr}</strong></td>
+                        <td style="color: var(--text-secondary);">${o.reason}</td>
+                        <td>
+                            <button style="padding: 4px 8px; font-size: 0.75rem;" onclick="copySingleOutage('${startStr}', '${endStr}', '${durStr}', '${o.reason.replace(/'/g, "")}')">Copiar Evidência</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        } catch (e) {
+            console.error("Erro ao carregar tabela de quedas:", e);
+        }
+    }
+
+    function copySingleOutage(start, end, dur, reason) {
+        const text = `Protocolo/Evidência de Queda da Conexão:\nInício: ${start}\nFim: ${end}\nDuração Total: ${dur}\nMotivo Detectado: ${reason}\nProvedor: ${currentConfig.isp_name}`;
+        navigator.clipboard.writeText(text).then(() => {
+            alert("Evidência da queda copiada para a área de transferência!");
+        });
+    }
+
+    // Ações
+    async function triggerSpeedtest() {
+        const btn = document.getElementById('btnSpeedtest');
+        btn.disabled = true;
+        btn.innerText = '⏳ Medindo velocidade...';
+        try {
+            await fetch('/api/trigger_speedtest', { method: 'POST' });
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.innerText = '⚡ Testar Conexão Agora';
+                fetchStatus();
+                fetchTimelineMetrics();
+            }, 6000);
+        } catch (e) {
+            btn.disabled = false;
+            btn.innerText = '⚡ Testar Conexão Agora';
+            alert("Erro ao disparar teste de velocidade.");
+        }
+    }
+
+    // Modal de Relatório
+    async function openReportModal() {
+        const hours = document.getElementById('timeRangeSelect').value;
+        document.getElementById('reportModal').style.display = 'flex';
+        const box = document.getElementById('reportContent');
+        box.innerText = "Gerando relatório técnico estruturado com cálculos da Anatel...";
+        try {
+            const res = await fetch(`/api/report?hours=${hours}`);
+            const text = await res.text();
+            box.innerText = text;
+        } catch (e) {
+            box.innerText = "Erro ao gerar relatório.";
+        }
+    }
+
+    function closeReportModal() {
+        document.getElementById('reportModal').style.display = 'none';
+    }
+
+    function copyReportText() {
+        const text = document.getElementById('reportContent').innerText;
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = document.getElementById('btnCopyReport');
+            const original = btn.innerText;
+            btn.innerText = "✅ Relatório Copiado com Sucesso!";
+            setTimeout(() => { btn.innerText = original; }, 2500);
+        });
+    }
+
+    // Modal de Config
+    function openConfigModal() {
+        document.getElementById('cfgIspName').value = currentConfig.isp_name || "Claro";
+        document.getElementById('cfgDown').value = currentConfig.contracted_download_mbps || 500;
+        document.getElementById('cfgUp').value = currentConfig.contracted_upload_mbps || 250;
+        document.getElementById('configModal').style.display = 'flex';
+    }
+
+    function closeConfigModal() {
+        document.getElementById('configModal').style.display = 'none';
+    }
+
+    async function saveConfig() {
+        const payload = {
+            isp_name: document.getElementById('cfgIspName').value,
+            contracted_download_mbps: document.getElementById('cfgDown').value,
+            contracted_upload_mbps: document.getElementById('cfgUp').value
+        };
+        try {
+            await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            closeConfigModal();
+            fetchStatus();
+            fetchTimelineMetrics();
+            alert("Configurações salvas com sucesso!");
+        } catch (e) {
+            alert("Erro ao salvar configurações.");
+        }
+    }
+
+    // Inicialização e Polling a cada 15 segundos
+    window.addEventListener('DOMContentLoaded', () => {
+        fetchStatus();
+        fetchTimelineMetrics();
+        fetchOutagesTable();
+
+        setInterval(() => {
+            fetchStatus();
+            fetchTimelineMetrics();
+            fetchOutagesTable();
+        }, 15000);
+    });
+</script>
+</body>
+</html>
