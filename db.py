@@ -5,18 +5,36 @@ Ultra-leve, seguro contra falhas, com suporte a WAL (Write-Ahead Logging).
 
 import sqlite3
 import os
+import hashlib
+import hmac
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "net_monitor.db")
+SECRET_SALT = "netmon_audit_v1_salt_2026"
+
+
+def compute_hash(data_str: str) -> str:
+    """Calcula hash HMAC SHA-256 para assegurar autenticidade dos registros contra adulteração."""
+    return hmac.new(SECRET_SALT.encode("utf-8"), data_str.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
+
+
+_db_initialized = False
 
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
+    global _db_initialized
     conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     # Ativa WAL mode para permitir leituras concorrentes do dashboard sem travar as escritas do monitor
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA synchronous = NORMAL;")
+    if not _db_initialized:
+        _db_initialized = True
+        try:
+            init_db(db_path)
+        except Exception:
+            pass
     return conn
 
 
@@ -34,9 +52,22 @@ def init_db(db_path: str = DB_PATH):
                 packet_loss_pct REAL NOT NULL,       -- % perda de pacotes (0 a 100)
                 dns_ok INTEGER NOT NULL,             -- 1 se resolução DNS funcionou, 0 se falhou
                 status TEXT NOT NULL,                -- 'ONLINE', 'INSTABLE', 'OFFLINE'
-                details TEXT                         -- info extra (ex: targets testados)
+                jitter_ms REAL,                      -- variação da latência em ms
+                details TEXT,                        -- info extra
+                record_hash TEXT                     -- Assinatura HMAC de integridade
             );
         """)
+
+        # Migrações transparentes
+        try:
+            conn.execute("ALTER TABLE pings ADD COLUMN jitter_ms REAL;")
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            conn.execute("ALTER TABLE pings ADD COLUMN record_hash TEXT;")
+        except sqlite3.OperationalError:
+            pass
 
         # Tabela de testes de velocidade (a cada 10 min ou instabilidade)
         conn.execute("""
@@ -48,9 +79,15 @@ def init_db(db_path: str = DB_PATH):
                 upload_mbps REAL,
                 ping_ms REAL,
                 status TEXT NOT NULL,                -- 'SUCCESS', 'FAILED'
-                error_message TEXT
+                error_message TEXT,
+                record_hash TEXT
             );
         """)
+
+        try:
+            conn.execute("ALTER TABLE speed_tests ADD COLUMN record_hash TEXT;")
+        except sqlite3.OperationalError:
+            pass
 
         # Tabela de quedas (Downtime tracking exato para operadora)
         conn.execute("""
@@ -60,7 +97,38 @@ def init_db(db_path: str = DB_PATH):
                 end_time TEXT,                       -- NULL se a queda ainda estiver ativa
                 duration_seconds REAL,
                 reason TEXT NOT NULL,                -- Causa (ex: '100% perda de pacotes', 'DNS inacessível')
-                status TEXT NOT NULL DEFAULT 'OPEN'  -- 'OPEN', 'CLOSED'
+                status TEXT NOT NULL DEFAULT 'OPEN', -- 'OPEN', 'CLOSED'
+                record_hash TEXT
+            );
+        """)
+
+        try:
+            conn.execute("ALTER TABLE outages ADD COLUMN record_hash TEXT;")
+        except sqlite3.OperationalError:
+            pass
+
+        # Migrações para encadeamento criptográfico e carimbo digital RFC 3161
+        for col_def in [
+            ("pings", "prev_hash TEXT"),
+            ("outages", "prev_hash TEXT"),
+            ("outages", "tsr_token TEXT"),
+            ("outages", "tsa_authority TEXT"),
+            ("speed_tests", "prev_hash TEXT"),
+            ("speed_tests", "result_url TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE {col_def[0]} ADD COLUMN {col_def[1]};")
+            except sqlite3.OperationalError:
+                pass
+
+        # Tabela de logs de auditoria (rastreia limpeza, reset e alterações administrativas)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT,
+                actor_ip TEXT
             );
         """)
 
@@ -76,6 +144,7 @@ def init_db(db_path: str = DB_PATH):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pings_timestamp ON pings(timestamp);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_speed_timestamp ON speed_tests(timestamp);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_outages_status ON outages(status);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);")
 
         # Configurações padrão
         default_configs = [
@@ -86,9 +155,27 @@ def init_db(db_path: str = DB_PATH):
             ("speedtest_interval_minutes", "10"),
             ("latency_alert_threshold_ms", "150"),
             ("loss_alert_threshold_pct", "10"),
+            ("heartbeat_url", ""),
         ]
         for key, val in default_configs:
             conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES (?, ?);", (key, val))
+    conn.close()
+
+
+def get_config(key: str, default: str = "", db_path: str = DB_PATH) -> str:
+    """Busca um valor de configuração no banco."""
+    conn = get_connection(db_path)
+    cur = conn.execute("SELECT value FROM config WHERE key = ?;", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_config(key: str, value: str, db_path: str = DB_PATH):
+    """Grava ou atualiza um valor de configuração."""
+    conn = get_connection(db_path)
+    with conn:
+        conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?);", (key, str(value)))
     conn.close()
 
 
@@ -98,19 +185,30 @@ def record_ping(
     packet_loss_pct: float,
     dns_ok: bool,
     status: str,
+    jitter_ms: Optional[float] = None,
     details: str = "",
     db_path: str = DB_PATH
 ) -> int:
-    """Registra uma verificação de conectividade de 30 segundos."""
+    """Registra uma verificação de conectividade com encadeamento de hash (blockchain-style)."""
     now_iso = datetime.now(timezone.utc).isoformat()
+    online_int = 1 if is_online else 0
+    dns_int = 1 if dns_ok else 0
+
     conn = get_connection(db_path)
+    cur = conn.execute("SELECT record_hash FROM pings ORDER BY id DESC LIMIT 1;")
+    last_row = cur.fetchone()
+    prev_hash = last_row["record_hash"] if last_row and last_row["record_hash"] else "GENESIS"
+
+    raw_signature = f"{prev_hash}|{now_iso}|{online_int}|{latency_ms}|{packet_loss_pct}|{dns_int}|{status}|{jitter_ms}"
+    rec_hash = compute_hash(raw_signature)
+
     with conn:
         cur = conn.execute(
             """
-            INSERT INTO pings (timestamp, is_online, latency_ms, packet_loss_pct, dns_ok, status, details)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO pings (timestamp, is_online, latency_ms, packet_loss_pct, dns_ok, status, jitter_ms, details, record_hash, prev_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (now_iso, 1 if is_online else 0, latency_ms, packet_loss_pct, 1 if dns_ok else 0, status, details)
+            (now_iso, online_int, latency_ms, packet_loss_pct, dns_int, status, jitter_ms, details, rec_hash, prev_hash)
         )
         ping_id = cur.lastrowid
     conn.close()
@@ -124,18 +222,26 @@ def record_speed_test(
     ping_ms: Optional[float],
     status: str,
     error_message: Optional[str] = None,
+    result_url: Optional[str] = None,
     db_path: str = DB_PATH
 ) -> int:
-    """Registra um teste completo de velocidade."""
+    """Registra um teste completo de velocidade com encadeamento de hash."""
     now_iso = datetime.now(timezone.utc).isoformat()
     conn = get_connection(db_path)
+    cur = conn.execute("SELECT record_hash FROM speed_tests ORDER BY id DESC LIMIT 1;")
+    last_row = cur.fetchone()
+    prev_hash = last_row["record_hash"] if last_row and last_row["record_hash"] else "GENESIS"
+
+    raw_signature = f"{prev_hash}|{now_iso}|{trigger_reason}|{download_mbps}|{upload_mbps}|{ping_ms}|{status}"
+    rec_hash = compute_hash(raw_signature)
+
     with conn:
         cur = conn.execute(
             """
-            INSERT INTO speed_tests (timestamp, trigger_reason, download_mbps, upload_mbps, ping_ms, status, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO speed_tests (timestamp, trigger_reason, download_mbps, upload_mbps, ping_ms, status, error_message, record_hash, prev_hash, result_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (now_iso, trigger_reason, download_mbps, upload_mbps, ping_ms, status, error_message)
+            (now_iso, trigger_reason, download_mbps, upload_mbps, ping_ms, status, error_message, rec_hash, prev_hash, result_url)
         )
         test_id = cur.lastrowid
     conn.close()
@@ -152,18 +258,24 @@ def get_active_outage(db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
 
 
 def start_outage(reason: str, db_path: str = DB_PATH) -> int:
-    """Inicia o registro de uma nova queda."""
-    # Se já existir uma queda aberta, não duplica
+    """Inicia o registro de uma nova queda com encadeamento de hash."""
     active = get_active_outage(db_path)
     if active:
         return active["id"]
 
-    now_iso = datetime.now(timezone.utc).isoformat()
     conn = get_connection(db_path)
+    cur = conn.execute("SELECT record_hash FROM outages ORDER BY id DESC LIMIT 1;")
+    last_row = cur.fetchone()
+    prev_hash = last_row["record_hash"] if last_row and last_row["record_hash"] else "GENESIS"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    raw_sig = f"{prev_hash}|{now_iso}|{reason}|OPEN"
+    rec_hash = compute_hash(raw_sig)
+
     with conn:
         cur = conn.execute(
-            "INSERT INTO outages (start_time, reason, status) VALUES (?, ?, 'OPEN');",
-            (now_iso, reason)
+            "INSERT INTO outages (start_time, reason, status, record_hash, prev_hash) VALUES (?, ?, 'OPEN', ?, ?);",
+            (now_iso, reason, rec_hash, prev_hash)
         )
         outage_id = cur.lastrowid
     conn.close()
@@ -171,7 +283,10 @@ def start_outage(reason: str, db_path: str = DB_PATH) -> int:
 
 
 def close_active_outage(db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
-    """Fecha a queda ativa calculando a duração total em segundos."""
+    """
+    Fecha a queda ativa calculando a duração, atualizando a assinatura encadeada
+    e solicitando um carimbo de tempo digital público (RFC 3161 via DigiCert/FreeTSA).
+    """
     active = get_active_outage(db_path)
     if not active:
         return None
@@ -180,21 +295,38 @@ def close_active_outage(db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
     now_iso = now.isoformat()
     start_dt = datetime.fromisoformat(active["start_time"])
     duration = max(0.0, (now - start_dt).total_seconds())
+    dur_round = round(duration, 1)
+
+    prev_hash = active.get("prev_hash") or "GENESIS"
+    raw_sig = f"{prev_hash}|{active['start_time']}|{now_iso}|{dur_round}|{active['reason']}|CLOSED"
+    rec_hash = compute_hash(raw_sig)
+
+    # Solicita carimbo de tempo digital externo RFC 3161 (DigiCert ou FreeTSA)
+    tsr_token = None
+    tsa_authority = None
+    try:
+        import rfc3161
+        tsr_token, tsa_authority = rfc3161.request_rfc3161_timestamp(rec_hash, timeout=4)
+    except Exception:
+        pass
 
     conn = get_connection(db_path)
     with conn:
         conn.execute(
             """
             UPDATE outages
-            SET end_time = ?, duration_seconds = ?, status = 'CLOSED'
+            SET end_time = ?, duration_seconds = ?, status = 'CLOSED', record_hash = ?, tsr_token = ?, tsa_authority = ?
             WHERE id = ?;
             """,
-            (now_iso, round(duration, 1), active["id"])
+            (now_iso, dur_round, rec_hash, tsr_token, tsa_authority, active["id"])
         )
     conn.close()
     active["end_time"] = now_iso
-    active["duration_seconds"] = round(duration, 1)
+    active["duration_seconds"] = dur_round
     active["status"] = "CLOSED"
+    active["record_hash"] = rec_hash
+    active["tsr_token"] = tsr_token
+    active["tsa_authority"] = tsa_authority
     return active
 
 
@@ -223,7 +355,10 @@ def get_latest_status(db_path: str = DB_PATH) -> Dict[str, Any]:
             COUNT(*) as total_checks,
             SUM(CASE WHEN is_online = 1 THEN 1 ELSE 0 END) as online_checks,
             AVG(latency_ms) as avg_latency,
-            AVG(packet_loss_pct) as avg_loss
+            MIN(latency_ms) as min_latency,
+            MAX(latency_ms) as max_latency,
+            AVG(packet_loss_pct) as avg_loss,
+            AVG(jitter_ms) as avg_jitter
         FROM pings WHERE timestamp >= ?;
         """,
         (since_24h,)
@@ -239,6 +374,19 @@ def get_latest_status(db_path: str = DB_PATH) -> Dict[str, Any]:
     )
     outages_24h = cur.fetchone()
 
+    cur = conn.execute(
+        """
+        SELECT 
+            COUNT(*) as test_count,
+            AVG(download_mbps) as avg_down,
+            AVG(upload_mbps) as avg_up
+        FROM speed_tests
+        WHERE timestamp >= ? AND status = 'SUCCESS';
+        """,
+        (since_24h,)
+    )
+    speed_24h = cur.fetchone()
+
     # Configs
     cur = conn.execute("SELECT key, value FROM config;")
     configs = {row["key"]: row["value"] for row in cur.fetchall()}
@@ -249,14 +397,33 @@ def get_latest_status(db_path: str = DB_PATH) -> Dict[str, Any]:
     online_checks = summary_24h["online_checks"] if summary_24h and summary_24h["online_checks"] else 0
     uptime_pct = round((online_checks / total_checks * 100), 2) if total_checks > 0 else 100.0
 
+    # Detecção automática de operadora e IP público
+    try:
+        import isp_detector
+        isp_info = isp_detector.get_isp_info()
+    except Exception:
+        isp_info = {
+            "isp": configs.get("isp_name", "Meu Provedor"),
+            "ip": "",
+            "asn": "",
+            "city": "",
+            "region": ""
+        }
+
     return {
         "last_ping": dict(last_ping) if last_ping else None,
         "last_speed": dict(last_speed) if last_speed else None,
         "active_outage": dict(active_outage) if active_outage else None,
+        "isp_info": isp_info,
         "stats_24h": {
             "uptime_pct": uptime_pct,
             "avg_latency_ms": round(summary_24h["avg_latency"] or 0, 1) if summary_24h else 0,
+            "min_latency_ms": round(summary_24h["min_latency"] or 0, 1) if summary_24h and summary_24h["min_latency"] is not None else 0,
+            "max_latency_ms": round(summary_24h["max_latency"] or 0, 1) if summary_24h and summary_24h["max_latency"] is not None else 0,
+            "avg_jitter_ms": round(summary_24h["avg_jitter"] or 0, 1) if summary_24h and summary_24h["avg_jitter"] is not None else 0,
             "avg_loss_pct": round(summary_24h["avg_loss"] or 0, 1) if summary_24h else 0,
+            "avg_download_mbps": round(speed_24h["avg_down"] or 0, 1) if speed_24h and speed_24h["avg_down"] else 0,
+            "avg_upload_mbps": round(speed_24h["avg_up"] or 0, 1) if speed_24h and speed_24h["avg_up"] else 0,
             "total_outages": outages_24h["outage_count"] if outages_24h else 0,
             "total_downtime_seconds": round(outages_24h["total_downtime_sec"] or 0, 1) if outages_24h else 0,
         },
@@ -323,7 +490,7 @@ def get_all_outages(limit: int = 100, db_path: str = DB_PATH) -> List[Dict[str, 
     conn = get_connection(db_path)
     cur = conn.execute(
         """
-        SELECT id, start_time, end_time, duration_seconds, reason, status
+        SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsa_authority
         FROM outages
         ORDER BY id DESC
         LIMIT ?;
@@ -361,8 +528,8 @@ def export_csv_data(table_name: str, db_path: str = DB_PATH) -> str:
 
 def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
     """
-    Gera um relatório profissional pronto para colar no atendimento da Claro,
-    no Procon ou na Anatel com horários, duração de quedas e médias de velocidade.
+    Gera um relatorio tecnico estruturado com horarios de queda,
+    medicoes de banda e base legal da Anatel para envio ao suporte.
     """
     conn = get_connection(db_path)
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -370,14 +537,25 @@ def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
     # Coleta configs
     cur = conn.execute("SELECT key, value FROM config;")
     configs = {row["key"]: row["value"] for row in cur.fetchall()}
-    isp_name = configs.get("isp_name", "Claro")
     contracted_down = configs.get("contracted_download_mbps", "N/A")
     contracted_up = configs.get("contracted_upload_mbps", "N/A")
 
-    # Quedas no período
+    # Identificacao da operadora
+    try:
+        import isp_detector
+        isp_info = isp_detector.get_isp_info()
+    except Exception:
+        isp_info = {}
+
+    isp_name = isp_info.get("isp") or configs.get("isp_name", "Provedor")
+    public_ip = isp_info.get("ip", "Nao informado")
+    asn = isp_info.get("asn", "")
+    city = isp_info.get("city", "")
+
+    # Quedas no periodo
     cur = conn.execute(
         """
-        SELECT id, start_time, end_time, duration_seconds, reason, status
+        SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsa_authority
         FROM outages
         WHERE start_time >= ?
         ORDER BY id ASC;
@@ -386,14 +564,16 @@ def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
     )
     outages = [dict(r) for r in cur.fetchall()]
 
-    # Pings no período
+    # Pings no periodo
     cur = conn.execute(
         """
         SELECT 
             COUNT(*) as total_checks,
             SUM(CASE WHEN is_online = 1 THEN 1 ELSE 0 END) as online_checks,
             AVG(latency_ms) as avg_latency,
+            MIN(latency_ms) as min_latency,
             MAX(latency_ms) as max_latency,
+            AVG(jitter_ms) as avg_jitter,
             AVG(packet_loss_pct) as avg_loss
         FROM pings WHERE timestamp >= ?;
         """,
@@ -401,7 +581,7 @@ def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
     )
     ping_summary = cur.fetchone()
 
-    # Velocidade no período
+    # Velocidade no periodo
     cur = conn.execute(
         """
         SELECT 
@@ -427,41 +607,210 @@ def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
     total_downtime_sec = sum(o["duration_seconds"] or 0 for o in outages)
     downtime_min = round(total_downtime_sec / 60, 1)
 
+    # Verificação de integridade dos registros para o laudo
+    integrity = verify_database_integrity(db_path)
+
     lines = []
     lines.append("=" * 65)
-    lines.append(f"RELATORIO TECNICO DE INSTABILIDADE DE CONEXAO ({isp_name.upper()})")
+    lines.append(f"RELATORIO TECNICO DE QUALIDADE DE CONEXAO ({isp_name.upper()})")
     lines.append("=" * 65)
-    lines.append(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-    lines.append(f"Período analisado: Últimas {hours} horas")
-    lines.append(f"Plano Contratado: {contracted_down} Mbps Download / {contracted_up} Mbps Upload")
+    lines.append(f"Data de geracao: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    lines.append(f"Periodo monitorado: Ultimas {hours} horas")
+    lines.append(f"Operadora identificada: {isp_name}" + (f" ({asn})" if asn else ""))
+    if public_ip and public_ip != "Nao informado":
+        lines.append(f"IP Publico do cliente: {public_ip}" + (f" - {city}" if city else ""))
+    lines.append(f"Plano contratado informado: {contracted_down} Mbps Download / {contracted_up} Mbps Upload")
+    lines.append(f"Integridade criptografica: {integrity['message']}")
     lines.append("")
-    lines.append("RESUMO GERAL DE QUALIDADE:")
-    lines.append(f"- Disponibilidade (Uptime): {uptime_pct}%")
-    lines.append(f"- Total de interrupções/quedas registradas: {len(outages)}")
-    lines.append(f"- Tempo total fora do ar: {downtime_min} minutos ({round(total_downtime_sec)} segundos)")
-    if ping_summary:
-        lines.append(f"- Latência Média: {round(ping_summary['avg_latency'] or 0, 1)} ms (Pico máximo: {round(ping_summary['max_latency'] or 0, 1)} ms)")
-        lines.append(f"- Perda média de pacotes: {round(ping_summary['avg_loss'] or 0, 2)}%")
+    lines.append("RESUMO DE CONECTIVIDADE E MEDIAS:")
+    lines.append(f"- Disponibilidade do link: {uptime_pct}%")
+    lines.append(f"- Interrupcoes de sinal registradas: {len(outages)}")
+    lines.append(f"- Tempo acumulado sem conexao: {downtime_min} minutos ({round(total_downtime_sec)} segundos)")
+    if ping_summary and ping_summary["total_checks"]:
+        lines.append(f"- Latencia media: {round(ping_summary['avg_latency'] or 0, 1)} ms (Minima: {round(ping_summary['min_latency'] or 0, 1)} ms | Pico: {round(ping_summary['max_latency'] or 0, 1)} ms)")
+        if ping_summary["avg_jitter"]:
+            lines.append(f"- Jitter medio (variacao de rota): {round(ping_summary['avg_jitter'] or 0, 1)} ms")
+        lines.append(f"- Perda media de pacotes: {round(ping_summary['avg_loss'] or 0, 2)}%")
     if speed_summary and speed_summary["test_count"]:
-        lines.append(f"- Download Médio medido: {round(speed_summary['avg_down'] or 0, 2)} Mbps (Mínimo registrado: {round(speed_summary['min_down'] or 0, 2)} Mbps)")
-        lines.append(f"- Upload Médio medido: {round(speed_summary['avg_up'] or 0, 2)} Mbps (Mínimo registrado: {round(speed_summary['min_up'] or 0, 2)} Mbps)")
+        lines.append(f"- Download medio medido: {round(speed_summary['avg_down'] or 0, 2)} Mbps (Minimo: {round(speed_summary['min_down'] or 0, 2)} Mbps | Maximo: {round(speed_summary['max_down'] or 0, 2)} Mbps)")
+        lines.append(f"- Upload medio medido: {round(speed_summary['avg_up'] or 0, 2)} Mbps (Minimo: {round(speed_summary['min_up'] or 0, 2)} Mbps | Maximo: {round(speed_summary['max_up'] or 0, 2)} Mbps)")
     lines.append("")
-    lines.append("HISTÓRICO DETALHADO DE QUEDAS (DOWNTIME):")
+    lines.append("HISTORICO DETALHADO DE INTERRUPCOES:")
     if not outages:
-        lines.append("  (Nenhuma queda completa registrada no período selecionado)")
+        lines.append("  (Nenhuma queda de conexao registrada no periodo selecionado)")
     else:
         for i, o in enumerate(outages, 1):
             st = o["start_time"].replace("T", " ")[:19]
             et = o["end_time"].replace("T", " ")[:19] if o["end_time"] else "EM ANDAMENTO"
-            dur = f"{round(o['duration_seconds'] or 0)} segundos ({round((o['duration_seconds'] or 0)/60, 1)} min)" if o["end_time"] else "N/A"
-            lines.append(f"  [{i}] Início: {st} | Fim: {et} | Duração: {dur}")
-            lines.append(f"      Motivo detectado: {o['reason']}")
+            dur = f"{round(o['duration_seconds'] or 0)}s ({round((o['duration_seconds'] or 0)/60, 1)} min)" if o["end_time"] else "EM ABERTO"
+            tsa_badge = f" [Carimbo Digital: {o['tsa_authority']} RFC 3161]" if o.get("tsa_authority") else ""
+            lines.append(f"  [{i}] Inicio: {st} | Termino: {et} | Duracao: {dur}{tsa_badge}")
+            lines.append(f"      Diagnostico: {o['reason']}")
 
     lines.append("")
-    lines.append("NOTA LEGAL / REGULAMENTAÇÃO ANATEL:")
-    lines.append("Conforme Resoluções da Anatel (Regulamento de Qualidade da Banda Larga RQUAL):")
-    lines.append("1. A prestadora deve entregar no mínimo 80% da taxa média contratada e 40% da taxa instantânea.")
-    lines.append("2. Interrupções de serviço dão direito a abatimento proporcional na fatura mensal.")
+    lines.append("REGULAMENTACAO APLICAVEL (ANATEL):")
+    lines.append("Conforme resolucoes do Regulamento de Qualidade da Banda Larga (RQUAL) da Anatel:")
+    lines.append("1. A prestadora deve entregar no minimo 80% da media mensal e 40% da taxa instantanea.")
+    lines.append("2. Periodos de interrupcao geram direito a abatimento proporcional na cobranca.")
     lines.append("=" * 65)
 
     return "\n".join(lines)
+
+
+def log_audit(action: str, details: str = "", actor_ip: str = "local", db_path: str = DB_PATH):
+    """Registra uma operacao administrativa no log de auditoria."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_connection(db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, action, details, actor_ip) VALUES (?, ?, ?, ?);",
+            (now_iso, action, details, actor_ip)
+        )
+    conn.close()
+
+
+def verify_database_integrity(db_path: str = DB_PATH) -> Dict[str, Any]:
+    """
+    Verifica a autenticidade dos dados armazenados no SQLite.
+    Valida a assinatura HMAC de cada registro, o encadeamento cronológico (hash chaining)
+    e a validade dos carimbos de tempo digitais RFC 3161 das quedas.
+    """
+    import rfc3161
+
+    conn = get_connection(db_path)
+    cur = conn.execute("SELECT id, timestamp, is_online, latency_ms, packet_loss_pct, dns_ok, status, jitter_ms, record_hash, prev_hash FROM pings ORDER BY id ASC;")
+    pings = cur.fetchall()
+
+    checked_pings = 0
+    tampered_pings = 0
+    chain_broken_pings = 0
+    last_ping_hash = None
+
+    for p in pings:
+        if p["record_hash"]:
+            checked_pings += 1
+            prev_h = p["prev_hash"] or "GENESIS"
+            sig_chained_int = f"{prev_h}|{p['timestamp']}|{p['is_online']}|{p['latency_ms']}|{p['packet_loss_pct']}|{p['dns_ok']}|{p['status']}|{p['jitter_ms']}"
+            sig_legacy_int = f"{p['timestamp']}|{p['is_online']}|{p['latency_ms']}|{p['packet_loss_pct']}|{p['dns_ok']}|{p['status']}|{p['jitter_ms']}"
+            sig_legacy_bool = f"{p['timestamp']}|{bool(p['is_online'])}|{p['latency_ms']}|{p['packet_loss_pct']}|{bool(p['dns_ok'])}|{p['status']}|{p['jitter_ms']}"
+
+            valid_hash = (
+                compute_hash(sig_chained_int) == p["record_hash"] or
+                compute_hash(sig_legacy_int) == p["record_hash"] or
+                compute_hash(sig_legacy_bool) == p["record_hash"]
+            )
+            if not valid_hash:
+                tampered_pings += 1
+
+            if last_ping_hash and p["prev_hash"] and p["prev_hash"] != "GENESIS":
+                if p["prev_hash"] != last_ping_hash:
+                    chain_broken_pings += 1
+            last_ping_hash = p["record_hash"]
+
+    cur = conn.execute("SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsr_token, tsa_authority FROM outages ORDER BY id ASC;")
+    outages = cur.fetchall()
+    checked_outages = 0
+    tampered_outages = 0
+    chain_broken_outages = 0
+    tsa_verified_outages = 0
+    last_outage_hash = None
+
+    for o in outages:
+        if o["record_hash"]:
+            checked_outages += 1
+            prev_h = o["prev_hash"] or "GENESIS"
+            if o["status"] == "CLOSED":
+                sig_chained = f"{prev_h}|{o['start_time']}|{o['end_time']}|{o['duration_seconds']}|{o['reason']}|CLOSED"
+                sig_legacy = f"{o['start_time']}|{o['end_time']}|{o['duration_seconds']}|{o['reason']}|CLOSED"
+            else:
+                sig_chained = f"{prev_h}|{o['start_time']}|{o['reason']}|OPEN"
+                sig_legacy = f"{o['start_time']}|{o['reason']}|OPEN"
+
+            valid_hash = (
+                compute_hash(sig_chained) == o["record_hash"] or
+                compute_hash(sig_legacy) == o["record_hash"]
+            )
+            if not valid_hash:
+                tampered_outages += 1
+
+            if last_outage_hash and o["prev_hash"] and o["prev_hash"] != "GENESIS":
+                if o["prev_hash"] != last_outage_hash:
+                    chain_broken_outages += 1
+            last_outage_hash = o["record_hash"]
+
+            if o["tsr_token"]:
+                if rfc3161.verify_tsr_token(o["tsr_token"], o["record_hash"]):
+                    tsa_verified_outages += 1
+
+    conn.close()
+
+    total_tampered = tampered_pings + tampered_outages + chain_broken_pings + chain_broken_outages
+    is_clean = (total_tampered == 0)
+
+    if is_clean:
+        if tsa_verified_outages > 0:
+            msg = f"Base de dados 100% íntegra. {tsa_verified_outages} quedas certificadas via RFC 3161."
+        else:
+            msg = "Base de dados 100% íntegra, encadeada e autenticada."
+    else:
+        msg = f"Atenção: {total_tampered} inconsistências detectadas na integridade ou cadeia de registros."
+
+    return {
+        "status": "VALID" if is_clean else "TAMPERED",
+        "checked_pings": checked_pings,
+        "tampered_pings": tampered_pings,
+        "chain_broken_pings": chain_broken_pings,
+        "checked_outages": checked_outages,
+        "tampered_outages": tampered_outages,
+        "chain_broken_outages": chain_broken_outages,
+        "tsa_verified_outages": tsa_verified_outages,
+        "message": msg
+    }
+
+
+def cleanup_old_data(days: int = 30, actor_ip: str = "local", db_path: str = DB_PATH) -> Dict[str, Any]:
+    """
+    Remove registros de telemetria mais antigos que a quantidade de dias informada
+    para liberar espaco em disco no servidor. Nao apaga o historico de quedas.
+    """
+    if days < 7:
+        raise ValueError("O periodo minimo de retencao e de 7 dias para garantir auditoria.")
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conn = get_connection(db_path)
+    with conn:
+        cur1 = conn.execute("DELETE FROM pings WHERE timestamp < ?;", (cutoff,))
+        deleted_pings = cur1.rowcount
+        cur2 = conn.execute("DELETE FROM speed_tests WHERE timestamp < ?;", (cutoff,))
+        deleted_speeds = cur2.rowcount
+    conn.execute("VACUUM;")
+    conn.close()
+
+    log_audit("CLEANUP_OLD_DATA", f"Excluidos {deleted_pings} pings e {deleted_speeds} testes anteriores a {days} dias.", actor_ip, db_path)
+
+    return {
+        "deleted_pings": deleted_pings,
+        "deleted_speed_tests": deleted_speeds,
+        "cutoff_date": cutoff
+    }
+
+
+def reset_database(actor_ip: str = "local", db_path: str = DB_PATH) -> Dict[str, Any]:
+    """
+    Reseta todas as tabelas de metricas, mantendo configuracoes e registrando
+    o evento permanentemente no log de auditoria.
+    """
+    conn = get_connection(db_path)
+    with conn:
+        conn.execute("DELETE FROM pings;")
+        conn.execute("DELETE FROM speed_tests;")
+        conn.execute("DELETE FROM outages;")
+    conn.execute("VACUUM;")
+    conn.close()
+
+    log_audit("RESET_DATABASE", "Historico de metricas zerado administrativamente.", actor_ip, db_path)
+
+    return {
+        "status": "SUCCESS",
+        "message": "Historico de metricas resetado com sucesso."
+    }

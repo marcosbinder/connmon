@@ -11,6 +11,7 @@ import re
 import socket
 import sys
 import threading
+import urllib.request
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
@@ -48,7 +49,7 @@ def tcp_ping(host: str, port: int = 53, timeout: float = 1.2) -> Optional[float]
         return None
 
 
-def ping_host(host: str, count: int = 2, timeout_ms: int = 1000) -> Dict[str, Any]:
+def ping_host(host: str, count: int = 3, timeout_ms: int = 1000) -> Dict[str, Any]:
     """Executa ping multiplataforma (Windows e Linux) para um host especifico."""
     is_win = platform.system().lower() == "windows"
     param = "-n" if is_win else "-c"
@@ -62,7 +63,7 @@ def ping_host(host: str, count: int = 2, timeout_ms: int = 1000) -> Dict[str, An
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=max(3.0, (timeout_ms / 1000.0 * count) + 1.5)
+            timeout=max(4.0, (timeout_ms / 1000.0 * count) + 1.5)
         )
         
         # Extrai perda de pacotes (PT e EN)
@@ -72,6 +73,12 @@ def ping_host(host: str, count: int = 2, timeout_ms: int = 1000) -> Dict[str, An
         # Extrai latência em ms (suporta 'time=14.2 ms' no Linux e 'tempo=15ms' no Windows)
         times = [float(x) for x in re.findall(r"(?:time|tempo)[=<](\d+(?:\.\d+)?)\s*ms", res.stdout, re.IGNORECASE)]
         avg_latency = round(sum(times) / len(times), 1) if times else None
+
+        # Jitter: variação média entre pacotes sucessivos
+        jitter_ms = None
+        if len(times) >= 2:
+            diffs = [abs(times[i] - times[i - 1]) for i in range(1, len(times))]
+            jitter_ms = round(sum(diffs) / len(diffs), 1)
 
         # Fallback 1: Linha de sumario do Linux (rtt min/avg/max/mdev = 14.2/15.1/...)
         if avg_latency is None:
@@ -97,6 +104,7 @@ def ping_host(host: str, count: int = 2, timeout_ms: int = 1000) -> Dict[str, An
         return {
             "online": is_online,
             "latency_ms": avg_latency,
+            "jitter_ms": jitter_ms,
             "loss_pct": packet_loss
         }
     except Exception:
@@ -106,11 +114,13 @@ def ping_host(host: str, count: int = 2, timeout_ms: int = 1000) -> Dict[str, An
             return {
                 "online": True,
                 "latency_ms": tcp_lat,
+                "jitter_ms": None,
                 "loss_pct": 0.0
             }
         return {
             "online": False,
             "latency_ms": None,
+            "jitter_ms": None,
             "loss_pct": 100.0
         }
 
@@ -145,6 +155,9 @@ def check_connectivity() -> Dict[str, Any]:
     valid_latencies = [r["latency_ms"] for r in results if r["latency_ms"] is not None]
     avg_latency = round(sum(valid_latencies) / len(valid_latencies), 1) if valid_latencies else None
 
+    valid_jitters = [r["jitter_ms"] for r in results if r.get("jitter_ms") is not None]
+    avg_jitter = round(sum(valid_jitters) / len(valid_jitters), 1) if valid_jitters else None
+
     losses = [r["loss_pct"] for r in results]
     avg_loss = round(sum(losses) / len(losses), 1) if losses else 100.0
 
@@ -165,6 +178,7 @@ def check_connectivity() -> Dict[str, Any]:
         "is_online": is_online,
         "status": status,
         "latency_ms": avg_latency,
+        "jitter_ms": avg_jitter,
         "packet_loss_pct": avg_loss,
         "dns_ok": dns_ok,
         "details": details
@@ -203,6 +217,29 @@ def trigger_async_speedtest(reason: str):
     t.start()
 
 
+def send_heartbeat_ping():
+    """
+    Envia ping HTTP silencioso para o serviço externo de monitoramento (ex: Healthchecks.io).
+    Roda em thread separada com timeout curto de 3s para nunca atrasar o loop principal.
+    """
+    try:
+        hb_url = db.get_config("heartbeat_url", "")
+        if not hb_url or not hb_url.startswith("http"):
+            return
+
+        def _call():
+            try:
+                req = urllib.request.Request(hb_url, headers={"User-Agent": "NetMon-Heartbeat/1.0"})
+                with urllib.request.urlopen(req, timeout=3):
+                    pass
+            except Exception:
+                pass
+
+        threading.Thread(target=_call, daemon=True).start()
+    except Exception:
+        pass
+
+
 def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Executa uma iteração única de monitoramento de 30 segundos.
@@ -217,8 +254,13 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
         packet_loss_pct=check["packet_loss_pct"],
         dns_ok=check["dns_ok"],
         status=check["status"],
+        jitter_ms=check.get("jitter_ms"),
         details=check["details"]
     )
+
+    # Dispara testemunha externa (se configurada) para comprovação independente de uptime
+    if check["is_online"]:
+        send_heartbeat_ping()
 
     prev_status = last_state.get("status", "UNKNOWN")
     curr_status = check["status"]
@@ -228,26 +270,27 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
     if curr_status == "OFFLINE" and prev_status != "OFFLINE":
         reason = f"Perda total de pacotes ({check['packet_loss_pct']}%) e falha nos servidores DNS"
         outage_id = db.start_outage(reason)
-        print(f"\n[{now_str}] [!] [QUEDA DETECTADA] Conexão caiu! Registrado no banco como Queda #{outage_id}")
+        print(f"\n[{now_str}] [!] [QUEDA DETECTADA] Conexao caiu. Registrado como Queda #{outage_id}")
 
     # Transição: CONEXÃO VOLTOU (OFFLINE -> ONLINE/INSTABLE)
     elif prev_status == "OFFLINE" and curr_status != "OFFLINE":
         closed = db.close_active_outage()
         if closed:
             dur = closed.get("duration_seconds", 0)
-            print(f"\n[{now_str}] [+] [RECUPERADO] Conexão voltou após {dur}s ({round(dur/60, 1)} min) de queda!")
+            print(f"\n[{now_str}] [+] [RECUPERADO] Conexao voltou apos {dur}s ({round(dur/60, 1)} min) de interrupcao.")
             # Agenda teste de velocidade imediato pós-recuperação
             trigger_async_speedtest(reason="recovery")
 
     # Formatação de log no console
     lat_str = f"{check['latency_ms']} ms" if check['latency_ms'] is not None else "-- ms"
+    jit_str = f" (Jitter: {check['jitter_ms']} ms)" if check.get("jitter_ms") is not None else ""
     tag = "[OK]      " if curr_status == "ONLINE" else ("[ALERTA]  " if curr_status == "INSTABLE" else "[QUEDA]   ")
-    print(f"[{now_str}] {tag} [{curr_status:<8}] Latência: {lat_str:<8} | Perda: {check['packet_loss_pct']:>4.1f}% | DNS: {'OK' if check['dns_ok'] else 'FALHA'}")
+    print(f"[{now_str}] {tag} [{curr_status:<8}] Latencia: {lat_str:<7}{jit_str} | Perda: {check['packet_loss_pct']:>4.1f}% | DNS: {'OK' if check['dns_ok'] else 'FALHA'}")
 
     # Disparo por instabilidade (se houver degradação e cooldown de 3 minutos respeitado)
     if curr_status == "INSTABLE":
         if (time.time() - _last_speed_test_time) > 180:
-            print(f"[{now_str}] [!] Instabilidade detectada (Latência alta ou perda). Disparando teste de velocidade...")
+            print(f"[{now_str}] [!] Instabilidade detectada (Latencia alta ou perda). Disparando teste de velocidade...")
             trigger_async_speedtest(reason="instability_detected")
 
     return check
@@ -261,11 +304,18 @@ def run_monitor_loop(ping_interval: int = 30, speed_interval_min: int = 10):
     global _is_running
     db.init_db()
 
-    print("=" * 65)
-    print("📡 INICIANDO MONITOR DE CONEXÃO E SAÚDE DE REDE")
-    print(f"⏱️  Intervalo de Ping: {ping_interval}s | Teste de Velocidade: {speed_interval_min}min")
-    print("💾 Banco SQLite ativo: net_monitor.db (Modo WAL)")
-    print("=" * 65)
+    print("=" * 60)
+    print("NetMon - Monitor de Conexao e Metricas de Rede")
+    print(f"Checagem de Ping: {ping_interval}s | Teste de Velocidade: {speed_interval_min}min")
+    try:
+        import isp_detector
+        isp_info = isp_detector.get_isp_info()
+        if isp_info.get("isp"):
+            print(f"Operadora: {isp_info['isp']} | IP Publico: {isp_info.get('ip', 'Nao identificado')}")
+    except Exception:
+        pass
+    print("Banco SQLite: net_monitor.db (WAL)")
+    print("=" * 60)
 
     # Executa primeiro teste de velocidade inicial na largada
     trigger_async_speedtest(reason="startup")

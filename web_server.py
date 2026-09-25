@@ -70,6 +70,12 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         params = urllib.parse.parse_qs(parsed.query)
 
+        # Favicon embutido para evitar 404 nos logs
+        if path == "/favicon.ico":
+            svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="#0f172a" stroke="#38bdf8" stroke-width="6"/><circle cx="50" cy="50" r="18" fill="#22c55e"/><path d="M25 50 A25 25 0 0 1 75 50" fill="none" stroke="#38bdf8" stroke-width="6" stroke-linecap="round"/><path d="M15 50 A35 35 0 0 1 85 50" fill="none" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" opacity="0.5"/></svg>'
+            self._send_text(svg, content_type="image/svg+xml")
+            return
+
         # Rota principal (Dashboard)
         if path in ["/", "/index.html"]:
             dashboard_file = os.path.join(STATIC_DIR, "index.html")
@@ -80,6 +86,17 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/status":
             status_data = db.get_latest_status()
             self._send_json(status_data)
+            return
+
+        # API: Informacoes da operadora
+        if path == "/api/isp":
+            try:
+                import isp_detector
+                refresh = "refresh" in params and params["refresh"][0] == "1"
+                info = isp_detector.get_isp_info(force_refresh=refresh)
+                self._send_json(info)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
             return
 
         # API: Linha do tempo de métricas para gráficos (pings e speed tests)
@@ -120,6 +137,21 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
             self._send_text(report_text, content_type="text/plain; charset=utf-8", filename=filename)
             return
 
+        # API: Verificação de Integridade Criptográfica (antifraude)
+        if path == "/api/integrity":
+            result = db.verify_database_integrity()
+            self._send_json(result)
+            return
+
+        # API: Histórico de Auditoria Administrativa
+        if path == "/api/audit":
+            conn = db.get_connection()
+            cur = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 50;")
+            logs = [dict(r) for r in cur.fetchall()]
+            conn.close()
+            self._send_json(logs)
+            return
+
         # API: Exportação de CSV
         if path == "/api/export":
             table = params.get("table", ["pings"])[0]
@@ -148,6 +180,7 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        client_ip = self.client_address[0] if self.client_address else "local"
 
         # Disparar teste manual de velocidade
         if path == "/api/trigger_speedtest":
@@ -158,7 +191,7 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
             })
             return
 
-        # Atualizar configurações (ex: plano contratado)
+        # Atualizar configurações (ex: plano contratado) com auditoria
         if path == "/api/config":
             try:
                 content_len = int(self.headers.get("Content-Length", 0))
@@ -171,7 +204,30 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
                         conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?);", (str(k), str(v)))
                 conn.close()
 
+                db.log_audit("CONFIG_UPDATE", f"Plano atualizado: {payload}", client_ip)
                 self._send_json({"message": "Configurações salvas com sucesso!", "saved": payload})
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=400)
+            return
+
+        # Limpeza de dados antigos (purga segura para servidores com pouco disco)
+        if path == "/api/cleanup":
+            try:
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
+                payload = json.loads(body) if body else {}
+                days = int(payload.get("days", 30))
+                res = db.cleanup_old_data(days=days, actor_ip=client_ip)
+                self._send_json(res)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=400)
+            return
+
+        # Reset completo de métricas com log de auditoria
+        if path == "/api/reset":
+            try:
+                res = db.reset_database(actor_ip=client_ip)
+                self._send_json(res)
             except Exception as e:
                 self._send_json({"error": str(e)}, status=400)
             return

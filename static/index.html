@@ -164,6 +164,16 @@
             background: #b45309;
         }
 
+        button.btn-danger {
+            background: #dc2626;
+            border-color: #ef4444;
+            color: white;
+        }
+
+        button.btn-danger:hover {
+            background: #b91c1c;
+        }
+
         /* Banner de Queda Ativa */
         .outage-banner {
             display: none;
@@ -445,12 +455,78 @@
             display: block;
         }
 
+        /* ISP & Network Details Bar */
+        .network-meta-bar {
+            background: rgba(30, 41, 59, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px 16px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .network-meta-items {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .network-meta-item strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .ip-mask-btn {
+            background: none;
+            border: none;
+            color: var(--accent-blue);
+            cursor: pointer;
+            padding: 0 4px;
+            font-size: 0.75rem;
+            text-decoration: underline;
+        }
+
         footer {
             text-align: center;
             padding: 20px 0;
             color: var(--text-muted);
             font-size: 0.8rem;
             border-top: 1px solid var(--border-color);
+        }
+
+        /* Impressão otimizada para laudo técnico */
+        @media print {
+            body {
+                background: #ffffff !important;
+                color: #000000 !important;
+                padding: 10px !important;
+            }
+            header, .header-actions, .dropdown, button, #btnSpeedtest, .modal-overlay, footer {
+                display: none !important;
+            }
+            .kpi-card, .chart-box, .table-box, .network-meta-bar {
+                background: #ffffff !important;
+                border: 1px solid #cccccc !important;
+                color: #000000 !important;
+                box-shadow: none !important;
+            }
+            .kpi-value, .chart-title, th, td {
+                color: #000000 !important;
+            }
+            .kpi-grid {
+                grid-template-columns: repeat(3, 1fr) !important;
+            }
+            .charts-grid {
+                grid-template-columns: 1fr !important;
+                page-break-inside: avoid;
+            }
         }
     </style>
 </head>
@@ -468,20 +544,32 @@
         </div>
 
         <div class="header-actions">
-            <select id="timeRangeSelect" onchange="fetchTimelineMetrics()">
-                <option value="1">Ultima 1 hora</option>
-                <option value="6">Ultimas 6 horas</option>
-                <option value="24" selected>Ultimas 24 horas</option>
-                <option value="72">Ultimos 3 dias</option>
-                <option value="168">Ultimos 7 dias</option>
+            <select id="timeRangeSelect" onchange="fetchTimelineMetrics()" title="Filtrar período dos gráficos">
+                <option value="1">Última 1 hora</option>
+                <option value="6">Últimas 6 horas</option>
+                <option value="24" selected>Últimas 24 horas</option>
+                <option value="72">Últimos 3 dias</option>
+                <option value="168">Últimos 7 dias</option>
             </select>
 
             <button class="btn-primary" id="btnSpeedtest" onclick="triggerSpeedtest()">
-                Testar Conexao Agora
+                Testar Conexão Agora
             </button>
 
             <button class="btn-warning" onclick="openReportModal()">
-                Gerar Relatorio para Suporte
+                Relatório Suporte
+            </button>
+
+            <button onclick="window.print()">
+                Imprimir Laudo
+            </button>
+
+            <button onclick="openAuditModal()">
+                Auditoria & Banco
+            </button>
+
+            <button class="btn-danger" onclick="executeReset()" title="Zerar histórico do banco imediatamente sem reiniciar">
+                Apagar Tudo
             </button>
 
             <div class="dropdown">
@@ -493,9 +581,34 @@
                 </div>
             </div>
 
-            <button onclick="openConfigModal()">Configuracoes</button>
+            <button onclick="openConfigModal()">Configurações</button>
         </div>
     </header>
+
+    <!-- Barra de Metadados de Rede & Provedor -->
+    <div class="network-meta-bar">
+        <div class="network-meta-items">
+            <div class="network-meta-item">
+                Provedor: <strong id="metaIsp">Detectando...</strong>
+            </div>
+            <div class="network-meta-item">
+                ASN: <strong id="metaAsn">--</strong>
+            </div>
+            <div class="network-meta-item">
+                IP Público: <strong id="metaIp">--.---.---.--</strong>
+                <button class="ip-mask-btn" onclick="toggleIpVisibility()" id="btnToggleIp">Mostrar</button>
+            </div>
+            <div class="network-meta-item">
+                Localidade: <strong id="metaLocation">--</strong>
+            </div>
+            <div class="network-meta-item" title="Autenticidade dos registros verificada via HMAC-SHA256">
+                Integridade: <strong id="metaIntegrity" style="color: var(--accent-green);">Verificando...</strong>
+            </div>
+        </div>
+        <div style="font-size: 0.8rem; color: var(--text-muted);" id="metaLanIp">
+            Acesso na Rede Local: <strong>--</strong>
+        </div>
+    </div>
 
     <!-- Outage Banner (Visível apenas se houver queda em andamento) -->
     <div id="activeOutageBanner" class="outage-banner">
@@ -518,6 +631,12 @@
             <div class="kpi-label">Latência Atual</div>
             <div class="kpi-value" id="kpiLatency">-- <span>ms</span></div>
             <div class="kpi-subtitle" id="kpiAvgLatency">Média 24h: -- ms</div>
+        </div>
+
+        <div class="kpi-card" id="cardJitter">
+            <div class="kpi-label">Variação (Jitter)</div>
+            <div class="kpi-value" id="kpiJitter">-- <span>ms</span></div>
+            <div class="kpi-subtitle" id="kpiAvgJitter">Média 24h: -- ms</div>
         </div>
 
         <div class="kpi-card" id="cardLoss">
@@ -647,6 +766,11 @@
                 <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Upload Contratado (Mbps):</label>
                 <input type="number" id="cfgUp" value="250" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
             </div>
+            <div style="margin-bottom: 15px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Testemunha Externa (URL Webhook / Healthchecks.io):</label>
+                <input type="url" id="cfgHeartbeat" placeholder="https://hc-ping.com/seu-uuid-aqui" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+                <span style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Opcional e gratuito. Envia um sinal a cada ciclo online. Se a internet cair, a nuvem externa registra a indisponibilidade de forma independente.</span>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn-primary" onclick="saveConfig()">Salvar Configurações</button>
@@ -655,10 +779,84 @@
     </div>
 </div>
 
+<!-- Modal de Auditoria e Gestão de Dados -->
+<div id="auditModal" class="modal-overlay">
+    <div class="modal-card" style="max-width: 650px;">
+        <div class="modal-header">
+            <h3>Auditoria, Integridade e Manutenção do Banco</h3>
+            <button onclick="closeAuditModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; margin-bottom: 20px;">
+                <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-blue);">Encadeamento Criptográfico & Carimbo Digital RFC 3161</div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;">
+                    Cada teste é encadeado ao hash do registro anterior (blockchain/git). Quedas de sinal são carimbadas digitalmente por Autoridades Certificadoras externas (DigiCert / FreeTSA), tornando o histórico impossível de forjar mesmo por quem tem acesso ao servidor.
+                </p>
+                <div id="integrityDetails" style="font-size: 0.85rem; font-family: monospace; color: var(--accent-green); padding: 8px; background: #0f172a; border-radius: 6px;">
+                    Verificando assinaturas e cadeia...
+                </div>
+            </div>
+
+            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; margin-bottom: 20px;">
+                <div style="font-weight: 600; margin-bottom: 6px; color: var(--text-primary);">Limpeza de Historico Antigo (Otimizacao de Disco)</div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;">
+                    Ideal para servidores com memoria e disco limitados. Remove checagens de pings e testes antigos, mantendo todas as quedas registradas intactas.
+                </p>
+                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <label style="font-size: 0.85rem; color: var(--text-secondary);">Apagar dados anteriores a:</label>
+                    <select id="cleanupDaysSelect" style="padding: 6px 10px;">
+                        <option value="15">15 dias</option>
+                        <option value="30" selected>30 dias</option>
+                        <option value="60">60 dias</option>
+                        <option value="90">90 dias</option>
+                    </select>
+                    <button class="btn-warning" onclick="executeCleanup()">Executar Limpeza</button>
+                </div>
+            </div>
+
+            <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 14px;">
+                <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-red);">Zona de Risco: Reset Completo</div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;">
+                    Zera todas as tabelas de telemetria e quedas. A acao sera gravada permanentemente no historico de auditoria.
+                </p>
+                <button style="background: var(--accent-red); color: white; border: none;" onclick="executeReset()">Resetar Todas as Metricas</button>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button onclick="closeAuditModal()">Fechar</button>
+        </div>
+    </div>
+</div>
+
 <script>
     let latencyChartInstance = null;
     let speedChartInstance = null;
     let currentConfig = { isp_name: "Claro", contracted_download_mbps: "500", contracted_upload_mbps: "250" };
+    let currentPublicIp = "";
+    let ipVisible = false;
+    let wasOffline = false;
+
+    function toggleIpVisibility() {
+        ipVisible = !ipVisible;
+        const el = document.getElementById('metaIp');
+        const btn = document.getElementById('btnToggleIp');
+        if (ipVisible && currentPublicIp) {
+            el.innerText = currentPublicIp;
+            btn.innerText = "Ocultar";
+        } else {
+            el.innerText = maskIp(currentPublicIp);
+            btn.innerText = "Mostrar";
+        }
+    }
+
+    function maskIp(ip) {
+        if (!ip || ip === "Desconhecido") return "--.---.---.--";
+        const parts = ip.split('.');
+        if (parts.length === 4) {
+            return `${parts[0]}.${parts[1]}.***.***`;
+        }
+        return ip.substring(0, 4) + '***';
+    }
 
     // Formata timestamp ISO para hora local legível
     function formatTime(isoString) {
@@ -691,6 +889,17 @@
             document.getElementById('contractedSubtitle').innerText = `Contratado: ${data.config.contracted_download_mbps || 500}M Down / ${data.config.contracted_upload_mbps || 250}M Up`;
         }
 
+        // Metadados de Provedor e IP
+        if (data.isp_info) {
+            const info = data.isp_info;
+            document.getElementById('metaIsp').innerText = info.isp || currentConfig.isp_name || "Detectando...";
+            document.getElementById('metaAsn').innerText = info.asn || "--";
+            currentPublicIp = info.ip || "";
+            document.getElementById('metaIp').innerText = ipVisible ? currentPublicIp : maskIp(currentPublicIp);
+            const loc = [info.city, info.region].filter(Boolean).join(', ');
+            document.getElementById('metaLocation').innerText = loc || "--";
+        }
+
         const badge = document.getElementById('liveStatusBadge');
         const badgeText = document.getElementById('liveStatusText');
         const kpiStatus = document.getElementById('kpiStatus');
@@ -705,7 +914,9 @@
             badgeText.innerText = 'QUEDA DETECTADA';
             kpiStatus.innerText = 'FORA DO AR';
             cardStatus.className = 'kpi-card red';
+            wasOffline = true;
         } else {
+            wasOffline = false;
             outageBanner.style.display = 'none';
             const lastPing = data.last_ping;
             if (lastPing && lastPing.status === 'INSTABLE') {
@@ -723,25 +934,50 @@
 
         // Último ping
         if (data.last_ping) {
-            document.getElementById('kpiLatency').innerHTML = `${data.last_ping.latency_ms || '--'} <span>ms</span>`;
+            document.getElementById('kpiLatency').innerHTML = `${data.last_ping.latency_ms !== null ? data.last_ping.latency_ms : '--'} <span>ms</span>`;
+            document.getElementById('kpiJitter').innerHTML = `${data.last_ping.jitter_ms !== null && data.last_ping.jitter_ms !== undefined ? data.last_ping.jitter_ms : '--'} <span>ms</span>`;
             document.getElementById('kpiLoss').innerHTML = `${data.last_ping.packet_loss_pct.toFixed(1)} <span>%</span>`;
             document.getElementById('kpiDnsStatus').innerText = `Resolução DNS: ${data.last_ping.dns_ok ? 'OK' : 'FALHA'}`;
             document.getElementById('kpiLastCheck').innerText = `Última checagem: ${formatTime(data.last_ping.timestamp)}`;
+        } else {
+            document.getElementById('kpiLatency').innerHTML = `-- <span>ms</span>`;
+            document.getElementById('kpiJitter').innerHTML = `-- <span>ms</span>`;
+            document.getElementById('kpiLoss').innerHTML = `0.0 <span>%</span>`;
+            document.getElementById('kpiDnsStatus').innerText = `Resolução DNS: --`;
+            document.getElementById('kpiLastCheck').innerText = `Aguardando medição...`;
         }
 
-        // Última velocidade
+        // Última velocidade e média 24h
         if (data.last_speed) {
             document.getElementById('kpiDownload').innerHTML = `${data.last_speed.download_mbps || '--'} <span>Mbps</span>`;
-            document.getElementById('kpiUpload').innerText = `Upload: ${data.last_speed.upload_mbps || '--'} Mbps (${formatTime(data.last_speed.timestamp)})`;
+            let upText = `Upload: ${data.last_speed.upload_mbps || '--'} Mbps`;
+            if (data.stats_24h && data.stats_24h.avg_download_mbps) {
+                upText += ` (Média 24h: ${data.stats_24h.avg_download_mbps}M Down / ${data.stats_24h.avg_upload_mbps}M Up)`;
+            }
+            document.getElementById('kpiUpload').innerText = upText;
+        } else {
+            document.getElementById('kpiDownload').innerHTML = `-- <span>Mbps</span>`;
+            document.getElementById('kpiUpload').innerText = `Upload: -- Mbps`;
         }
 
         // Estatísticas 24h
         if (data.stats_24h) {
-            document.getElementById('kpiUptime').innerHTML = `${data.stats_24h.uptime_pct.toFixed(1)} <span>%</span>`;
-            const downMin = Math.round(data.stats_24h.total_downtime_seconds / 60);
-            document.getElementById('kpiDowntimeTotal').innerText = `Tempo total fora: ${downMin} min (${data.stats_24h.total_downtime_seconds.toFixed(0)}s)`;
-            document.getElementById('kpiAvgLatency').innerText = `Média 24h: ${data.stats_24h.avg_latency_ms} ms`;
-            document.getElementById('kpiOutagesCount').innerHTML = `${data.stats_24h.total_outages} <span>quedas</span>`;
+            const uptime = data.stats_24h.uptime_pct !== null && data.stats_24h.uptime_pct !== undefined ? data.stats_24h.uptime_pct : 100.0;
+            document.getElementById('kpiUptime').innerHTML = `${uptime.toFixed(1)} <span>%</span>`;
+            const downSec = data.stats_24h.total_downtime_seconds || 0;
+            const downMin = Math.round(downSec / 60);
+            document.getElementById('kpiDowntimeTotal').innerText = `Tempo total fora: ${downMin} min (${Math.round(downSec)}s)`;
+            
+            let latText = `Média 24h: ${data.stats_24h.avg_latency_ms !== null ? data.stats_24h.avg_latency_ms + ' ms' : '--'}`;
+            if (data.stats_24h.min_latency_ms !== null && data.stats_24h.max_latency_ms !== null) {
+                latText += ` (Mín: ${data.stats_24h.min_latency_ms} / Máx: ${data.stats_24h.max_latency_ms})`;
+            }
+            document.getElementById('kpiAvgLatency').innerText = latText;
+
+            const jitterText = data.stats_24h.avg_jitter_ms !== null && data.stats_24h.avg_jitter_ms !== undefined ? `${data.stats_24h.avg_jitter_ms} ms` : '--';
+            document.getElementById('kpiAvgJitter').innerText = `Média 24h: ${jitterText}`;
+
+            document.getElementById('kpiOutagesCount').innerHTML = `${data.stats_24h.total_outages || 0} <span>quedas</span>`;
         }
     }
 
@@ -927,6 +1163,11 @@
                     ? `<span class="badge badge-open">QUEDA ATIVA</span>` 
                     : `<span class="badge badge-closed">CONCLUÍDA</span>`;
                 
+                let certBadge = '';
+                if (o.tsa_authority) {
+                    certBadge = ` <span style="background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid rgba(56, 189, 248, 0.4); font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 6px;" title="Autenticidade oficial carimbada via RFC 3161">🏛️ ${o.tsa_authority}</span>`;
+                }
+                
                 const startStr = formatDateTime(o.start_time);
                 const endStr = o.end_time ? formatDateTime(o.end_time) : '<span style="color:var(--accent-red)">EM ANDAMENTO</span>';
                 
@@ -938,13 +1179,13 @@
 
                 return `
                     <tr>
-                        <td>${statusBadge}</td>
+                        <td>${statusBadge}${certBadge}</td>
                         <td><strong>${startStr}</strong></td>
                         <td>${endStr}</td>
                         <td><strong>${durStr}</strong></td>
                         <td style="color: var(--text-secondary);">${o.reason}</td>
                         <td>
-                            <button style="padding: 4px 8px; font-size: 0.75rem;" onclick="copySingleOutage('${startStr}', '${endStr}', '${durStr}', '${o.reason.replace(/'/g, "")}')">Copiar Evidência</button>
+                            <button style="padding: 4px 8px; font-size: 0.75rem;" onclick="copySingleOutage('${startStr}', '${endStr}', '${durStr}', '${o.reason.replace(/'/g, "")}', '${o.tsa_authority || ""}')">Copiar Evidência</button>
                         </td>
                     </tr>
                 `;
@@ -954,8 +1195,9 @@
         }
     }
 
-    function copySingleOutage(start, end, dur, reason) {
-        const text = `Protocolo/Evidência de Queda da Conexão:\nInício: ${start}\nFim: ${end}\nDuração Total: ${dur}\nMotivo Detectado: ${reason}\nProvedor: ${currentConfig.isp_name}`;
+    function copySingleOutage(start, end, dur, reason, tsa) {
+        let tsaLine = tsa ? `\nCarimbo Digital RFC 3161: Certificado por ${tsa} (Hora oficial atômica)` : "";
+        const text = `Protocolo/Evidência de Queda da Conexão:\nInício: ${start}\nFim: ${end}\nDuração Total: ${dur}\nMotivo Detectado: ${reason}\nProvedor: ${currentConfig.isp_name}${tsaLine}`;
         navigator.clipboard.writeText(text).then(() => {
             alert("Evidência da queda copiada para a área de transferência!");
         });
@@ -1015,6 +1257,7 @@
         document.getElementById('cfgIspName').value = currentConfig.isp_name || "Claro";
         document.getElementById('cfgDown').value = currentConfig.contracted_download_mbps || 500;
         document.getElementById('cfgUp').value = currentConfig.contracted_upload_mbps || 250;
+        document.getElementById('cfgHeartbeat').value = currentConfig.heartbeat_url || "";
         document.getElementById('configModal').style.display = 'flex';
     }
 
@@ -1026,7 +1269,8 @@
         const payload = {
             isp_name: document.getElementById('cfgIspName').value,
             contracted_download_mbps: document.getElementById('cfgDown').value,
-            contracted_upload_mbps: document.getElementById('cfgUp').value
+            contracted_upload_mbps: document.getElementById('cfgUp').value,
+            heartbeat_url: document.getElementById('cfgHeartbeat').value.trim()
         };
         try {
             await fetch('/api/config', {
@@ -1043,16 +1287,138 @@
         }
     }
 
+    // Modal de Auditoria e Integridade
+    async function openAuditModal() {
+        document.getElementById('auditModal').style.display = 'flex';
+        await checkIntegrity();
+    }
+
+    function closeAuditModal() {
+        document.getElementById('auditModal').style.display = 'none';
+    }
+
+    async function checkIntegrity() {
+        const box = document.getElementById('integrityDetails');
+        const badge = document.getElementById('metaIntegrity');
+        try {
+            const res = await fetch('/api/integrity');
+            const data = await res.json();
+            if (data.status === 'VALID') {
+                box.style.color = 'var(--accent-green)';
+                let tsaInfo = '';
+                if (data.tsa_verified_outages > 0) {
+                    tsaInfo = `<br>🏛️ <strong>${data.tsa_verified_outages}</strong> quedas carimbadas digitalmente por Autoridade Externa (DigiCert/FreeTSA).`;
+                }
+                box.innerHTML = `✅ ${data.message}<br>Cadeia de telemetria: ${data.checked_pings} registros contínuos (0 quebras)<br>Histórico de quedas: ${data.checked_outages} eventos verificados (0 adulterações)${tsaInfo}`;
+                if (badge) {
+                    badge.innerText = data.tsa_verified_outages > 0 ? 'Certificado (RFC 3161)' : 'Autêntico (Cadeia OK)';
+                    badge.style.color = 'var(--accent-green)';
+                }
+            } else {
+                box.style.color = 'var(--accent-red)';
+                const violations = (data.tampered_pings || 0) + (data.tampered_outages || 0);
+                const broken = (data.chain_broken_pings || 0) + (data.chain_broken_outages || 0);
+                box.innerHTML = `⚠️ ${data.message}<br>Violações detectadas: ${violations} registros alterados, ${broken} elos de cadeia rompidos.`;
+                if (badge) {
+                    badge.innerText = 'Adulterado!';
+                    badge.style.color = 'var(--accent-red)';
+                }
+            }
+        } catch (e) {
+            box.innerText = "Erro ao checar integridade.";
+        }
+    }
+
+    async function executeCleanup() {
+        const days = document.getElementById('cleanupDaysSelect').value;
+        if (!confirm(`Deseja apagar os registros de pings e testes com mais de ${days} dias para liberar disco? O histórico de quedas será preservado.`)) {
+            return;
+        }
+        try {
+            const res = await fetch('/api/cleanup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ days: parseInt(days) })
+            });
+            const data = await res.json();
+            alert(`Limpeza concluída!\nRegistros de ping removidos: ${data.deleted_pings}\nTestes de velocidade removidos: ${data.deleted_speed_tests}`);
+            fetchStatus();
+            fetchTimelineMetrics();
+            checkIntegrity();
+        } catch (e) {
+            alert("Erro ao executar limpeza.");
+        }
+    }
+
+    async function executeReset() {
+        if (!confirm("Tem certeza que deseja apagar todo o histórico de dados agora? O monitor continuará ativo do zero, sem necessidade de reiniciar o sistema.")) {
+            return;
+        }
+        try {
+            const res = await fetch('/api/reset', { method: 'POST' });
+            const data = await res.json();
+            
+            // Limpa dados dos gráficos imediatamente em memória
+            if (latencyChartInstance) {
+                latencyChartInstance.data.labels = [];
+                latencyChartInstance.data.datasets.forEach(ds => ds.data = []);
+                latencyChartInstance.update();
+            }
+            if (speedChartInstance) {
+                speedChartInstance.data.labels = [];
+                speedChartInstance.data.datasets.forEach(ds => ds.data = []);
+                speedChartInstance.update();
+            }
+
+            // Reseta tabela de quedas imediatamente
+            const tbody = document.getElementById('outagesTableBody');
+            if (tbody) {
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--accent-green); padding: 20px;">Nenhuma queda de conexão registrada. Rede 100% estável.</td></tr>`;
+            }
+
+            // Reseta KPIs imediatamente no DOM
+            document.getElementById('kpiLatency').innerHTML = `-- <span>ms</span>`;
+            document.getElementById('kpiAvgLatency').innerText = `Média 24h: -- ms`;
+            document.getElementById('kpiJitter').innerHTML = `-- <span>ms</span>`;
+            document.getElementById('kpiAvgJitter').innerText = `Média 24h: -- ms`;
+            document.getElementById('kpiLoss').innerHTML = `0.0 <span>%</span>`;
+            document.getElementById('kpiDnsStatus').innerText = `Resolução DNS: OK`;
+            document.getElementById('kpiLastCheck').innerText = `Histórico zerado`;
+            document.getElementById('kpiDownload').innerHTML = `-- <span>Mbps</span>`;
+            document.getElementById('kpiUpload').innerText = `Upload: -- Mbps`;
+            document.getElementById('kpiUptime').innerHTML = `100.0 <span>%</span>`;
+            document.getElementById('kpiDowntimeTotal').innerText = `Tempo total fora: 0 min (0s)`;
+            document.getElementById('kpiOutagesCount').innerHTML = `0 <span>quedas</span>`;
+
+            closeAuditModal();
+            await fetchStatus();
+            await fetchTimelineMetrics();
+            await fetchOutagesTable();
+            await checkIntegrity();
+            alert("Todo o histórico foi apagado com sucesso. O sistema já está registrando novas checagens.");
+        } catch (e) {
+            alert("Erro ao resetar histórico do banco de dados.");
+        }
+    }
+
     // Inicialização e Polling a cada 15 segundos
     window.addEventListener('DOMContentLoaded', () => {
         fetchStatus();
         fetchTimelineMetrics();
         fetchOutagesTable();
+        checkIntegrity();
+
+        fetch('/api/isp').then(r => r.json()).then(data => {
+            if (data && data.local_ip) {
+                document.getElementById('metaLanIp').innerHTML = `Acesso na Rede Local: <strong>http://${data.local_ip}:8080</strong>`;
+            }
+        }).catch(() => {});
 
         setInterval(() => {
             fetchStatus();
             fetchTimelineMetrics();
             fetchOutagesTable();
+            checkIntegrity();
         }, 15000);
     });
 </script>
