@@ -102,18 +102,20 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
         # API: Linha do tempo de métricas para gráficos (pings e speed tests)
         if path == "/api/metrics":
             hours = 24
+            start = params.get("start", [None])[0]
+            end = params.get("end", [None])[0]
             if "hours" in params:
                 try:
                     hours = max(1, min(720, int(params["hours"][0])))
                 except ValueError:
                     pass
-            metrics = db.get_metrics_timeline(hours=hours)
+            metrics = db.get_metrics_timeline(hours=hours, start_time=start, end_time=end)
             self._send_json(metrics)
             return
 
         # API: Histórico completo de quedas
         if path == "/api/outages":
-            limit = 100
+            limit = 150
             if "limit" in params:
                 try:
                     limit = int(params["limit"][0])
@@ -126,15 +128,31 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
         # API: Relatório textual para a operadora (Claro / Anatel)
         if path == "/api/report":
             hours = 72
+            start = params.get("start", [None])[0]
+            end = params.get("end", [None])[0]
             if "hours" in params:
                 try:
                     hours = int(params["hours"][0])
                 except ValueError:
                     pass
-            report_text = db.generate_isp_report_text(hours=hours)
+            report_text = db.generate_isp_report_text(hours=hours, start_time=start, end_time=end)
             as_download = "download" in params and params["download"][0] == "1"
-            filename = f"relatorio_instabilidade_{hours}h.txt" if as_download else None
+            filename = f"laudo_tecnico_{hours}h.txt" if as_download else None
             self._send_text(report_text, content_type="text/plain; charset=utf-8", filename=filename)
+            return
+
+        # API: Dados periciais consolidados para Laudo Técnico e PDF
+        if path == "/api/report_json":
+            hours = 72
+            start = params.get("start", [None])[0]
+            end = params.get("end", [None])[0]
+            if "hours" in params:
+                try:
+                    hours = int(params["hours"][0])
+                except ValueError:
+                    pass
+            report_data = db.generate_isp_report_data(hours=hours, start_time=start, end_time=end)
+            self._send_json(report_data)
             return
 
         # API: Verificação de Integridade Criptográfica (antifraude)

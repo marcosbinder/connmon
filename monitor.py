@@ -162,14 +162,16 @@ def check_connectivity() -> Dict[str, Any]:
     avg_loss = round(sum(losses) / len(losses), 1) if losses else 100.0
 
     online_targets = sum(1 for r in results if r["online"])
-    is_online = online_targets > 0 or dns_ok
 
     # Determina status
-    if not is_online or (avg_loss >= 100.0 and not dns_ok):
+    if online_targets == 0 or avg_loss >= 100.0:
+        is_online = False
         status = "OFFLINE"
     elif avg_loss > 10.0 or (avg_latency and avg_latency > 150.0) or not dns_ok:
+        is_online = True
         status = "INSTABLE"
     else:
+        is_online = True
         status = "ONLINE"
 
     details = f"targets={len(PING_TARGETS)},online_targets={online_targets},dns={'OK' if dns_ok else 'FAIL'}"
@@ -266,32 +268,40 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
     curr_status = check["status"]
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Transição: CONEXÃO CAIU (ONLINE/INSTABLE -> OFFLINE)
-    if curr_status == "OFFLINE" and prev_status != "OFFLINE":
-        reason = f"Perda total de pacotes ({check['packet_loss_pct']}%) e falha nos servidores DNS"
-        outage_id = db.start_outage(reason)
-        print(f"\n[{now_str}] [!] [QUEDA DETECTADA] Conexao caiu. Registrado como Queda #{outage_id}")
+    # Gerenciamento de quedas totais e parciais
+    if curr_status == "OFFLINE":
+        reason = f"Perda total de pacotes ({check['packet_loss_pct']}%) e falha nos alvos DNS"
+        outage_id = db.start_outage(reason, outage_type="TOTAL")
+        if prev_status != "OFFLINE":
+            print(f"\n[{now_str}] [!] [QUEDA TOTAL DETECTADA] Conexão caiu. Registrado como Queda #{outage_id}")
 
-    # Transição: CONEXÃO VOLTOU (OFFLINE -> ONLINE/INSTABLE)
-    elif prev_status == "OFFLINE" and curr_status != "OFFLINE":
-        closed = db.close_active_outage()
-        if closed:
-            dur = closed.get("duration_seconds", 0)
-            print(f"\n[{now_str}] [+] [RECUPERADO] Conexao voltou apos {dur}s ({round(dur/60, 1)} min) de interrupcao.")
-            # Agenda teste de velocidade imediato pós-recuperação
-            trigger_async_speedtest(reason="recovery")
+    elif curr_status == "INSTABLE":
+        active = db.get_active_outage()
+        if not active:
+            reason = f"Instabilidade severa: perda {check['packet_loss_pct']}%, latência {check['latency_ms']}ms, DNS {'OK' if check['dns_ok'] else 'FALHA'}"
+            outage_id = db.start_outage(reason, outage_type="PARCIAL")
+            if prev_status == "ONLINE":
+                print(f"\n[{now_str}] [!] [INSTABILIDADE DETECTADA] Conexão degradada. Registrado como Interrupção Parcial #{outage_id}")
+        if (time.time() - _last_speed_test_time) > 180:
+            print(f"[{now_str}] [!] Instabilidade detectada. Disparando teste de velocidade investigativo...")
+            trigger_async_speedtest(reason="instability_detected")
+
+    elif curr_status == "ONLINE":
+        active = db.get_active_outage()
+        if active or prev_status in ("OFFLINE", "INSTABLE"):
+            closed = db.close_active_outage()
+            if closed:
+                dur = closed.get("duration_seconds", 0)
+                o_type = closed.get("outage_type", "TOTAL")
+                tipo_lbl = "Queda Total" if o_type == "TOTAL" else "Instabilidade Parcial"
+                print(f"\n[{now_str}] [+] [RECUPERADO] Conexão normalizada após {dur}s ({round(dur/60, 1)} min) de {tipo_lbl}.")
+                trigger_async_speedtest(reason="recovery")
 
     # Formatação de log no console
     lat_str = f"{check['latency_ms']} ms" if check['latency_ms'] is not None else "-- ms"
     jit_str = f" (Jitter: {check['jitter_ms']} ms)" if check.get("jitter_ms") is not None else ""
     tag = "[OK]      " if curr_status == "ONLINE" else ("[ALERTA]  " if curr_status == "INSTABLE" else "[QUEDA]   ")
-    print(f"[{now_str}] {tag} [{curr_status:<8}] Latencia: {lat_str:<7}{jit_str} | Perda: {check['packet_loss_pct']:>4.1f}% | DNS: {'OK' if check['dns_ok'] else 'FALHA'}")
-
-    # Disparo por instabilidade (se houver degradação e cooldown de 3 minutos respeitado)
-    if curr_status == "INSTABLE":
-        if (time.time() - _last_speed_test_time) > 180:
-            print(f"[{now_str}] [!] Instabilidade detectada (Latencia alta ou perda). Disparando teste de velocidade...")
-            trigger_async_speedtest(reason="instability_detected")
+    print(f"[{now_str}] {tag} [{curr_status:<8}] Latência: {lat_str:<7}{jit_str} | Perda: {check['packet_loss_pct']:>4.1f}% | DNS: {'OK' if check['dns_ok'] else 'FALHA'}")
 
     return check
 

@@ -113,6 +113,7 @@ def init_db(db_path: str = DB_PATH):
             ("outages", "prev_hash TEXT"),
             ("outages", "tsr_token TEXT"),
             ("outages", "tsa_authority TEXT"),
+            ("outages", "outage_type TEXT DEFAULT 'TOTAL'"),
             ("speed_tests", "prev_hash TEXT"),
             ("speed_tests", "result_url TEXT"),
         ]:
@@ -257,10 +258,19 @@ def get_active_outage(db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-def start_outage(reason: str, db_path: str = DB_PATH) -> int:
-    """Inicia o registro de uma nova queda com encadeamento de hash."""
+def start_outage(reason: str, outage_type: str = "TOTAL", db_path: str = DB_PATH) -> int:
+    """Inicia o registro de uma nova queda (total ou parcial) com encadeamento de hash."""
     active = get_active_outage(db_path)
     if active:
+        # Se era parcial e agora caiu totalmente, escala para TOTAL
+        if active.get("outage_type") == "PARCIAL" and outage_type == "TOTAL":
+            conn = get_connection(db_path)
+            with conn:
+                conn.execute(
+                    "UPDATE outages SET outage_type = 'TOTAL', reason = ? WHERE id = ?;",
+                    (reason, active["id"])
+                )
+            conn.close()
         return active["id"]
 
     conn = get_connection(db_path)
@@ -269,13 +279,13 @@ def start_outage(reason: str, db_path: str = DB_PATH) -> int:
     prev_hash = last_row["record_hash"] if last_row and last_row["record_hash"] else "GENESIS"
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    raw_sig = f"{prev_hash}|{now_iso}|{reason}|OPEN"
+    raw_sig = f"{prev_hash}|{now_iso}|{outage_type}|{reason}|OPEN"
     rec_hash = compute_hash(raw_sig)
 
     with conn:
         cur = conn.execute(
-            "INSERT INTO outages (start_time, reason, status, record_hash, prev_hash) VALUES (?, ?, 'OPEN', ?, ?);",
-            (now_iso, reason, rec_hash, prev_hash)
+            "INSERT INTO outages (start_time, reason, status, record_hash, prev_hash, outage_type) VALUES (?, ?, 'OPEN', ?, ?, ?);",
+            (now_iso, reason, rec_hash, prev_hash, outage_type)
         )
         outage_id = cur.lastrowid
     conn.close()
@@ -296,9 +306,10 @@ def close_active_outage(db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
     start_dt = datetime.fromisoformat(active["start_time"])
     duration = max(0.0, (now - start_dt).total_seconds())
     dur_round = round(duration, 1)
+    o_type = active.get("outage_type") or "TOTAL"
 
     prev_hash = active.get("prev_hash") or "GENESIS"
-    raw_sig = f"{prev_hash}|{active['start_time']}|{now_iso}|{dur_round}|{active['reason']}|CLOSED"
+    raw_sig = f"{prev_hash}|{active['start_time']}|{now_iso}|{dur_round}|{o_type}|{active['reason']}|CLOSED"
     rec_hash = compute_hash(raw_sig)
 
     # Solicita carimbo de tempo digital externo RFC 3161 (DigiCert ou FreeTSA)
@@ -327,6 +338,7 @@ def close_active_outage(db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
     active["record_hash"] = rec_hash
     active["tsr_token"] = tsr_token
     active["tsa_authority"] = tsa_authority
+    active["outage_type"] = o_type
     return active
 
 
@@ -367,7 +379,11 @@ def get_latest_status(db_path: str = DB_PATH) -> Dict[str, Any]:
 
     cur = conn.execute(
         """
-        SELECT COUNT(*) as outage_count, COALESCE(SUM(duration_seconds), 0) as total_downtime_sec
+        SELECT 
+            COUNT(*) as outage_count,
+            SUM(CASE WHEN outage_type = 'TOTAL' OR outage_type IS NULL THEN 1 ELSE 0 END) as total_count,
+            SUM(CASE WHEN outage_type = 'PARCIAL' THEN 1 ELSE 0 END) as partial_count,
+            COALESCE(SUM(duration_seconds), 0) as total_downtime_sec
         FROM outages WHERE start_time >= ?;
         """,
         (since_24h,)
@@ -424,27 +440,39 @@ def get_latest_status(db_path: str = DB_PATH) -> Dict[str, Any]:
             "avg_loss_pct": round(summary_24h["avg_loss"] or 0, 1) if summary_24h else 0,
             "avg_download_mbps": round(speed_24h["avg_down"] or 0, 1) if speed_24h and speed_24h["avg_down"] else 0,
             "avg_upload_mbps": round(speed_24h["avg_up"] or 0, 1) if speed_24h and speed_24h["avg_up"] else 0,
-            "total_outages": outages_24h["outage_count"] if outages_24h else 0,
+            "total_outages": outages_24h["total_count"] if outages_24h and outages_24h["total_count"] else 0,
+            "partial_outages": outages_24h["partial_count"] if outages_24h and outages_24h["partial_count"] else 0,
+            "all_outages_count": outages_24h["outage_count"] if outages_24h else 0,
             "total_downtime_seconds": round(outages_24h["total_downtime_sec"] or 0, 1) if outages_24h else 0,
         },
         "config": configs
     }
 
 
-def get_metrics_timeline(hours: int = 24, db_path: str = DB_PATH) -> Dict[str, Any]:
-    """Retorna pontos de dados para plotagem de gráficos na janela solicitada."""
+def get_metrics_timeline(
+    hours: int = 24,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    db_path: str = DB_PATH
+) -> Dict[str, Any]:
+    """Retorna pontos de dados para plotagem de gráficos na janela solicitada (por horas ou período customizado)."""
     conn = get_connection(db_path)
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    if start_time:
+        since = start_time
+        until = end_time if end_time else datetime.now(timezone.utc).isoformat()
+    else:
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        until = datetime.now(timezone.utc).isoformat()
 
     # Pings (amostragem inteligente se houver muitos pontos para manter leveza)
     cur = conn.execute(
         """
         SELECT timestamp, is_online, latency_ms, packet_loss_pct, status
         FROM pings
-        WHERE timestamp >= ?
+        WHERE timestamp >= ? AND timestamp <= ?
         ORDER BY id ASC;
         """,
-        (since,)
+        (since, until)
     )
     pings = [dict(r) for r in cur.fetchall()]
 
@@ -458,22 +486,22 @@ def get_metrics_timeline(hours: int = 24, db_path: str = DB_PATH) -> Dict[str, A
         """
         SELECT timestamp, trigger_reason, download_mbps, upload_mbps, ping_ms, status
         FROM speed_tests
-        WHERE timestamp >= ? AND status = 'SUCCESS'
+        WHERE timestamp >= ? AND timestamp <= ? AND status = 'SUCCESS'
         ORDER BY id ASC;
         """,
-        (since,)
+        (since, until)
     )
     speeds = [dict(r) for r in cur.fetchall()]
 
-    # Quedas
+    # Quedas no período ou abertas
     cur = conn.execute(
         """
-        SELECT id, start_time, end_time, duration_seconds, reason, status
+        SELECT id, start_time, end_time, duration_seconds, reason, status, outage_type, tsa_authority
         FROM outages
-        WHERE start_time >= ? OR status = 'OPEN'
-        ORDER BY id DESC;
+        WHERE (start_time >= ? AND start_time <= ?) OR status = 'OPEN'
+        ORDER BY CASE WHEN status = 'OPEN' THEN 0 ELSE 1 END, id DESC;
         """,
-        (since,)
+        (since, until)
     )
     outages = [dict(r) for r in cur.fetchall()]
 
@@ -485,14 +513,14 @@ def get_metrics_timeline(hours: int = 24, db_path: str = DB_PATH) -> Dict[str, A
     }
 
 
-def get_all_outages(limit: int = 100, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
-    """Retorna histórico de todas as quedas registradas."""
+def get_all_outages(limit: int = 150, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    """Retorna histórico de todas as quedas registradas, com a queda OPEN sempre no topo."""
     conn = get_connection(db_path)
     cur = conn.execute(
         """
-        SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsa_authority
+        SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsa_authority, outage_type
         FROM outages
-        ORDER BY id DESC
+        ORDER BY CASE WHEN status = 'OPEN' THEN 0 ELSE 1 END, id DESC
         LIMIT ?;
         """,
         (limit,)
@@ -526,19 +554,32 @@ def export_csv_data(table_name: str, db_path: str = DB_PATH) -> str:
     return "\n".join(lines)
 
 
-def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
-    """
-    Gera um relatorio tecnico estruturado com horarios de queda,
-    medicoes de banda e base legal da Anatel para envio ao suporte.
-    """
+def generate_isp_report_data(
+    hours: int = 72,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    db_path: str = DB_PATH
+) -> Dict[str, Any]:
+    """Coleta e estrutura todas as métricas periciais para emissão do laudo técnico e PDF."""
     conn = get_connection(db_path)
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    if start_time:
+        since = start_time
+        until = end_time if end_time else datetime.now(timezone.utc).isoformat()
+    else:
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        until = datetime.now(timezone.utc).isoformat()
 
     # Coleta configs
     cur = conn.execute("SELECT key, value FROM config;")
     configs = {row["key"]: row["value"] for row in cur.fetchall()}
-    contracted_down = configs.get("contracted_download_mbps", "N/A")
-    contracted_up = configs.get("contracted_upload_mbps", "N/A")
+    try:
+        contracted_down = float(configs.get("contracted_download_mbps", 500) or 500)
+    except ValueError:
+        contracted_down = 500.0
+    try:
+        contracted_up = float(configs.get("contracted_upload_mbps", 250) or 250)
+    except ValueError:
+        contracted_up = 250.0
 
     # Identificacao da operadora
     try:
@@ -548,19 +589,16 @@ def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
         isp_info = {}
 
     isp_name = isp_info.get("isp") or configs.get("isp_name", "Provedor")
-    public_ip = isp_info.get("ip", "Nao informado")
-    asn = isp_info.get("asn", "")
-    city = isp_info.get("city", "")
 
-    # Quedas no periodo
+    # Quedas no periodo (totais e parciais)
     cur = conn.execute(
         """
-        SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsa_authority
+        SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsa_authority, outage_type
         FROM outages
-        WHERE start_time >= ?
+        WHERE (start_time >= ? AND start_time <= ?) OR (status = 'OPEN' AND start_time <= ?)
         ORDER BY id ASC;
         """,
-        (since,)
+        (since, until, until)
     )
     outages = [dict(r) for r in cur.fetchall()]
 
@@ -575,9 +613,9 @@ def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
             MAX(latency_ms) as max_latency,
             AVG(jitter_ms) as avg_jitter,
             AVG(packet_loss_pct) as avg_loss
-        FROM pings WHERE timestamp >= ?;
+        FROM pings WHERE timestamp >= ? AND timestamp <= ?;
         """,
-        (since,)
+        (since, until)
     )
     ping_summary = cur.fetchone()
 
@@ -593,9 +631,9 @@ def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
             MIN(upload_mbps) as min_up,
             MAX(upload_mbps) as max_up
         FROM speed_tests 
-        WHERE timestamp >= ? AND status = 'SUCCESS';
+        WHERE timestamp >= ? AND timestamp <= ? AND status = 'SUCCESS';
         """,
-        (since,)
+        (since, until)
     )
     speed_summary = cur.fetchone()
     conn.close()
@@ -607,52 +645,121 @@ def generate_isp_report_text(hours: int = 72, db_path: str = DB_PATH) -> str:
     total_downtime_sec = sum(o["duration_seconds"] or 0 for o in outages)
     downtime_min = round(total_downtime_sec / 60, 1)
 
-    # Verificação de integridade dos registros para o laudo
+    total_outages_count = sum(1 for o in outages if o.get("outage_type") == "TOTAL" or not o.get("outage_type"))
+    partial_outages_count = sum(1 for o in outages if o.get("outage_type") == "PARCIAL")
+
     integrity = verify_database_integrity(db_path)
 
+    avg_down = round(speed_summary["avg_down"] or 0, 2) if speed_summary and speed_summary["test_count"] else 0
+    avg_up = round(speed_summary["avg_up"] or 0, 2) if speed_summary and speed_summary["test_count"] else 0
+    down_compliance = round((avg_down / contracted_down * 100), 1) if contracted_down > 0 else 0
+    up_compliance = round((avg_up / contracted_up * 100), 1) if contracted_up > 0 else 0
+
+    return {
+        "client": {
+            "isp_name": isp_name,
+            "asn": isp_info.get("asn", ""),
+            "public_ip": isp_info.get("ip", ""),
+            "city": isp_info.get("city", ""),
+            "region": isp_info.get("region", ""),
+            "contracted_download_mbps": contracted_down,
+            "contracted_upload_mbps": contracted_up,
+        },
+        "period": {
+            "since": since,
+            "until": until,
+            "hours": hours,
+            "generated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        },
+        "summary": {
+            "uptime_pct": uptime_pct,
+            "total_checks": total_checks,
+            "online_checks": online_checks,
+            "total_downtime_sec": total_downtime_sec,
+            "total_downtime_min": downtime_min,
+            "total_outages_count": total_outages_count,
+            "partial_outages_count": partial_outages_count,
+            "all_outages_count": len(outages),
+        },
+        "performance": {
+            "avg_latency": round(ping_summary["avg_latency"] or 0, 1) if ping_summary and ping_summary["total_checks"] else None,
+            "min_latency": round(ping_summary["min_latency"] or 0, 1) if ping_summary and ping_summary["total_checks"] else None,
+            "max_latency": round(ping_summary["max_latency"] or 0, 1) if ping_summary and ping_summary["total_checks"] else None,
+            "avg_jitter": round(ping_summary["avg_jitter"] or 0, 1) if ping_summary and ping_summary["total_checks"] else None,
+            "avg_loss": round(ping_summary["avg_loss"] or 0, 2) if ping_summary and ping_summary["total_checks"] else 0.0,
+            "avg_down": avg_down,
+            "min_down": round(speed_summary["min_down"] or 0, 2) if speed_summary and speed_summary["test_count"] else 0,
+            "max_down": round(speed_summary["max_down"] or 0, 2) if speed_summary and speed_summary["test_count"] else 0,
+            "down_compliance_pct": down_compliance,
+            "avg_up": avg_up,
+            "min_up": round(speed_summary["min_up"] or 0, 2) if speed_summary and speed_summary["test_count"] else 0,
+            "max_up": round(speed_summary["max_up"] or 0, 2) if speed_summary and speed_summary["test_count"] else 0,
+            "up_compliance_pct": up_compliance,
+        },
+        "outages": outages,
+        "integrity": integrity
+    }
+
+
+def generate_isp_report_text(
+    hours: int = 72,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    db_path: str = DB_PATH
+) -> str:
+    """Gera o laudo pericial em formato texto estruturado a partir dos dados consolidados."""
+    data = generate_isp_report_data(hours=hours, start_time=start_time, end_time=end_time, db_path=db_path)
+    client = data["client"]
+    period = data["period"]
+    summary = data["summary"]
+    perf = data["performance"]
+    outages = data["outages"]
+
     lines = []
-    lines.append("=" * 65)
-    lines.append(f"RELATORIO TECNICO DE QUALIDADE DE CONEXAO ({isp_name.upper()})")
-    lines.append("=" * 65)
-    lines.append(f"Data de geracao: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
-    lines.append(f"Periodo monitorado: Ultimas {hours} horas")
-    lines.append(f"Operadora identificada: {isp_name}" + (f" ({asn})" if asn else ""))
-    if public_ip and public_ip != "Nao informado":
-        lines.append(f"IP Publico do cliente: {public_ip}" + (f" - {city}" if city else ""))
-    lines.append(f"Plano contratado informado: {contracted_down} Mbps Download / {contracted_up} Mbps Upload")
-    lines.append(f"Integridade criptografica: {integrity['message']}")
+    lines.append("=" * 68)
+    lines.append(f"LAUDO TECNICO DE AUDITORIA DE CONECTIVIDADE ({client['isp_name'].upper()})")
+    lines.append("=" * 68)
+    lines.append(f"Data de emissao: {period['generated_at']}")
+    lines.append(f"Periodo periciado: {period['since'][:19].replace('T', ' ')} ate {period['until'][:19].replace('T', ' ')}")
+    lines.append(f"Operadora identificada: {client['isp_name']}" + (f" ({client['asn']})" if client['asn'] else ""))
+    if client['public_ip']:
+        lines.append(f"IP Publico do cliente: {client['public_ip']}" + (f" - {client['city']}" if client['city'] else ""))
+    lines.append(f"Plano contratado informado: {client['contracted_download_mbps']} Mbps Download / {client['contracted_upload_mbps']} Mbps Upload")
+    lines.append(f"Integridade criptografica: {data['integrity']['message']}")
     lines.append("")
-    lines.append("RESUMO DE CONECTIVIDADE E MEDIAS:")
-    lines.append(f"- Disponibilidade do link: {uptime_pct}%")
-    lines.append(f"- Interrupcoes de sinal registradas: {len(outages)}")
-    lines.append(f"- Tempo acumulado sem conexao: {downtime_min} minutos ({round(total_downtime_sec)} segundos)")
-    if ping_summary and ping_summary["total_checks"]:
-        lines.append(f"- Latencia media: {round(ping_summary['avg_latency'] or 0, 1)} ms (Minima: {round(ping_summary['min_latency'] or 0, 1)} ms | Pico: {round(ping_summary['max_latency'] or 0, 1)} ms)")
-        if ping_summary["avg_jitter"]:
-            lines.append(f"- Jitter medio (variacao de rota): {round(ping_summary['avg_jitter'] or 0, 1)} ms")
-        lines.append(f"- Perda media de pacotes: {round(ping_summary['avg_loss'] or 0, 2)}%")
-    if speed_summary and speed_summary["test_count"]:
-        lines.append(f"- Download medio medido: {round(speed_summary['avg_down'] or 0, 2)} Mbps (Minimo: {round(speed_summary['min_down'] or 0, 2)} Mbps | Maximo: {round(speed_summary['max_down'] or 0, 2)} Mbps)")
-        lines.append(f"- Upload medio medido: {round(speed_summary['avg_up'] or 0, 2)} Mbps (Minimo: {round(speed_summary['min_up'] or 0, 2)} Mbps | Maximo: {round(speed_summary['max_up'] or 0, 2)} Mbps)")
+    lines.append("RESUMO DE CONECTIVIDADE E DISPONIBILIDADE:")
+    lines.append(f"- Disponibilidade geral do link: {summary['uptime_pct']}%")
+    lines.append(f"- Interrupcoes totais (queda de sinal): {summary['total_outages_count']}")
+    lines.append(f"- Instabilidades severas / quedas parciais: {summary['partial_outages_count']}")
+    lines.append(f"- Tempo acumulado sem conexao: {summary['total_downtime_min']} minutos ({round(summary['total_downtime_sec'])} segundos)")
+    if perf["avg_latency"] is not None:
+        lines.append(f"- Latencia media: {perf['avg_latency']} ms (Minima: {perf['min_latency']} ms | Pico: {perf['max_latency']} ms)")
+        if perf["avg_jitter"]:
+            lines.append(f"- Jitter medio (variacao de rota): {perf['avg_jitter']} ms")
+        lines.append(f"- Perda media de pacotes: {perf['avg_loss']}%")
+    if perf["avg_down"]:
+        lines.append(f"- Download medio medido: {perf['avg_down']} Mbps ({perf['down_compliance_pct']}% do contratado)")
+        lines.append(f"- Upload medio medido: {perf['avg_up']} Mbps ({perf['up_compliance_pct']}% do contratado)")
     lines.append("")
-    lines.append("HISTORICO DETALHADO DE INTERRUPCOES:")
+    lines.append("HISTORICO DETALHADO DE INTERRUPCOES E INSTABILIDADES:")
     if not outages:
-        lines.append("  (Nenhuma queda de conexao registrada no periodo selecionado)")
+        lines.append("  (Nenhuma queda ou instabilidade registrada no periodo selecionado)")
     else:
         for i, o in enumerate(outages, 1):
             st = o["start_time"].replace("T", " ")[:19]
-            et = o["end_time"].replace("T", " ")[:19] if o["end_time"] else "EM ANDAMENTO"
-            dur = f"{round(o['duration_seconds'] or 0)}s ({round((o['duration_seconds'] or 0)/60, 1)} min)" if o["end_time"] else "EM ABERTO"
-            tsa_badge = f" [Carimbo Digital: {o['tsa_authority']} RFC 3161]" if o.get("tsa_authority") else ""
-            lines.append(f"  [{i}] Inicio: {st} | Termino: {et} | Duracao: {dur}{tsa_badge}")
+            et = o["end_time"].replace("T", " ")[:19] if o["end_time"] else "EM ANDAMENTO (Tempo real)"
+            dur = f"{round(o['duration_seconds'] or 0)}s ({round((o['duration_seconds'] or 0)/60, 1)} min)" if o["end_time"] else "EM ANDAMENTO"
+            otype = f"[{o.get('outage_type', 'TOTAL')}]"
+            tsa_badge = f" [Carimbo RFC 3161: {o['tsa_authority']}]" if o.get("tsa_authority") else ""
+            lines.append(f"  [{i}] {otype} Inicio: {st} | Termino: {et} | Duracao: {dur}{tsa_badge}")
             lines.append(f"      Diagnostico: {o['reason']}")
 
     lines.append("")
-    lines.append("REGULAMENTACAO APLICAVEL (ANATEL):")
-    lines.append("Conforme resolucoes do Regulamento de Qualidade da Banda Larga (RQUAL) da Anatel:")
-    lines.append("1. A prestadora deve entregar no minimo 80% da media mensal e 40% da taxa instantanea.")
-    lines.append("2. Periodos de interrupcao geram direito a abatimento proporcional na cobranca.")
-    lines.append("=" * 65)
+    lines.append("REGULAMENTACAO APLICAVEL (ANATEL E CDC):")
+    lines.append("1. Art. 46 do RGC (Resolucao Anatel 632/2014): A interrupcao dos servicos gera direito a abatimento proporcional na cobranca mensal.")
+    lines.append("2. RQUAL (Resolucao Anatel 574/2011): A prestadora deve entregar no minimo 80% da media mensal contratada e 40% instantanea.")
+    lines.append("3. Codigo de Defesa do Consumidor (Art. 22): Os orgaos publicos e suas concessionarias sao obrigados a fornecer servicos adequados, eficientes e continuos.")
+    lines.append("=" * 68)
 
     return "\n".join(lines)
 
