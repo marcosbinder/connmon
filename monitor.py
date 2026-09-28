@@ -36,17 +36,23 @@ _is_running = True
 
 
 def tcp_ping(host: str, port: int = 53, timeout: float = 1.2) -> Optional[float]:
-    """Mede a latencia de handshake TCP como fallback caso ICMP ping falhe."""
+    """Mede a latencia de handshake TCP como fallback caso ICMP ping falhe com fechamento garantido."""
+    s = None
     try:
         start = time.perf_counter()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
         s.connect((host, port))
         duration = (time.perf_counter() - start) * 1000.0
-        s.close()
         return round(duration, 1)
     except Exception:
         return None
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 def ping_host(host: str, count: int = 3, timeout_ms: int = 1000) -> Dict[str, Any]:
@@ -63,6 +69,7 @@ def ping_host(host: str, count: int = 3, timeout_ms: int = 1000) -> Dict[str, An
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            errors="replace",
             timeout=max(4.0, (timeout_ms / 1000.0 * count) + 1.5)
         )
         
@@ -126,16 +133,24 @@ def ping_host(host: str, count: int = 3, timeout_ms: int = 1000) -> Dict[str, An
 
 
 def check_dns(domain: str = DNS_CHECK_DOMAIN, timeout: float = 2.0) -> bool:
-    """Verifica se a resolução DNS do provedor está respondendo."""
-    orig_timeout = socket.getdefaulttimeout()
-    try:
-        socket.setdefaulttimeout(timeout)
-        socket.gethostbyname(domain)
-        return True
-    except Exception:
-        return False
-    finally:
-        socket.setdefaulttimeout(orig_timeout)
+    """
+    Verifica se a resolução DNS do provedor está respondendo.
+    Executa a resolução em thread dedicada sem alterar socket.setdefaulttimeout() globalmente,
+    eliminando qualquer efeito colateral em conexões de outras threads (web server, speedtest).
+    """
+    resolved = [False]
+
+    def _resolve():
+        try:
+            socket.gethostbyname(domain)
+            resolved[0] = True
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_resolve, daemon=True, name="dns_probe")
+    t.start()
+    t.join(timeout=timeout)
+    return resolved[0]
 
 
 def check_connectivity() -> Dict[str, Any]:
@@ -163,11 +178,11 @@ def check_connectivity() -> Dict[str, Any]:
 
     online_targets = sum(1 for r in results if r["online"])
 
-    # Determina status
+    # Determina status com calibração justa (evita falso alarme em perda leve passageira)
     if online_targets == 0 or avg_loss >= 100.0:
         is_online = False
         status = "OFFLINE"
-    elif avg_loss > 10.0 or (avg_latency and avg_latency > 150.0) or not dns_ok:
+    elif avg_loss >= 50.0 or (avg_loss > 20.0 and not dns_ok) or (avg_latency and avg_latency > 250.0) or not dns_ok:
         is_online = True
         status = "INSTABLE"
     else:
@@ -188,35 +203,73 @@ def check_connectivity() -> Dict[str, Any]:
 
 
 def trigger_async_speedtest(reason: str):
-    """Dispara um teste de velocidade em segundo plano para não travar o loop de 30s."""
+    """Dispara um teste de velocidade em segundo plano para não travar o loop de monitoramento."""
     global _last_speed_test_time
 
     def _worker():
         global _last_speed_test_time
         if not _speed_lock.acquire(blocking=False):
-            return  # Já existe um teste em execução
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [SPEED] Teste de velocidade ignorado: outro teste já está em execução.")
+            return
 
+        now_str = datetime.now().strftime('%H:%M:%S')
+        res = None
         try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] [SPEED] Executando teste de velocidade ({reason})...")
-            res = speed_tester.run_speed_test()
+            print(f"[{now_str}] [SPEED] Executando teste de velocidade ({reason})...")
+            # Atualiza o timestamp imediatamente para evitar retentativas em tempestade
+            _last_speed_test_time = time.time()
+
+            try:
+                res = speed_tester.run_speed_test()
+            except Exception as test_err:
+                print(f"[{now_str}] [SPEED-ERRO] Exceção crítica na execução do speedtest: {test_err}")
+                res = {
+                    "download_mbps": None,
+                    "upload_mbps": None,
+                    "ping_ms": None,
+                    "status": "FAILED",
+                    "error_message": f"Exceção no motor de teste: {test_err}",
+                    "engine": "unknown"
+                }
+        finally:
+            try:
+                _speed_lock.release()
+            except RuntimeError:
+                pass
+
+        # Persistência tolerante a falhas no banco de dados após liberação do lock de rede
+        try:
+            if res is None:
+                res = {
+                    "download_mbps": None,
+                    "upload_mbps": None,
+                    "ping_ms": None,
+                    "status": "FAILED",
+                    "error_message": "Resultado do speedtest indisponível",
+                    "engine": "unknown"
+                }
+
             db.record_speed_test(
                 trigger_reason=reason,
-                download_mbps=res["download_mbps"],
-                upload_mbps=res["upload_mbps"],
-                ping_ms=res["ping_ms"],
-                status=res["status"],
-                error_message=res["error_message"]
+                download_mbps=res.get("download_mbps"),
+                upload_mbps=res.get("upload_mbps"),
+                ping_ms=res.get("ping_ms"),
+                status=res.get("status", "FAILED"),
+                error_message=res.get("error_message")
             )
-            _last_speed_test_time = time.time()
-            if res["status"] == "SUCCESS":
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [SPEED-OK] Download: {res['download_mbps']} Mbps | Upload: {res['upload_mbps']} Mbps (Ping: {res['ping_ms']} ms)")
-            else:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] [SPEED-ERRO] Falha no teste de velocidade: {res['error_message']}")
-        finally:
-            _speed_lock.release()
 
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
+            if res.get("status") == "SUCCESS":
+                print(f"[{now_str}] [SPEED-OK] Download: {res.get('download_mbps')} Mbps | Upload: {res.get('upload_mbps')} Mbps (Ping: {res.get('ping_ms')} ms)")
+            else:
+                print(f"[{now_str}] [SPEED-ERRO] Falha no teste de velocidade: {res.get('error_message')}")
+        except Exception as db_err:
+            print(f"[{now_str}] [SPEED-ERRO] Falha ao persistir resultado do teste no banco de dados: {db_err}")
+
+    try:
+        t = threading.Thread(target=_worker, daemon=True, name="speedtest_worker")
+        t.start()
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [SPEED-ERRO] Não foi possível iniciar thread de velocidade: {e}")
 
 
 def send_heartbeat_ping():
@@ -245,59 +298,90 @@ def send_heartbeat_ping():
 def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Executa uma iteração única de monitoramento de 30 segundos.
-    Atualiza banco e gerencia transição de quedas.
+    Atualiza banco e gerencia transição de quedas com isolamento de estágios.
     """
-    check = check_connectivity()
-
-    # Grava medição no banco
-    db.record_ping(
-        is_online=check["is_online"],
-        latency_ms=check["latency_ms"],
-        packet_loss_pct=check["packet_loss_pct"],
-        dns_ok=check["dns_ok"],
-        status=check["status"],
-        jitter_ms=check.get("jitter_ms"),
-        details=check["details"]
-    )
-
-    # Dispara testemunha externa (se configurada) para comprovação independente de uptime
-    if check["is_online"]:
-        send_heartbeat_ping()
-
-    prev_status = last_state.get("status", "UNKNOWN")
-    curr_status = check["status"]
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Gerenciamento de quedas totais e parciais
-    if curr_status == "OFFLINE":
-        reason = f"Perda total de pacotes ({check['packet_loss_pct']}%) e falha nos alvos DNS"
-        outage_id = db.start_outage(reason, outage_type="TOTAL")
-        if prev_status != "OFFLINE":
-            print(f"\n[{now_str}] [!] [QUEDA TOTAL DETECTADA] Conexão caiu. Registrado como Queda #{outage_id}")
+    # Estágio 1: Sondagem de conectividade
+    try:
+        check = check_connectivity()
+    except Exception as e:
+        print(f"[{now_str}] [ERRO] Falha crítica na checagem de conectividade: {e}")
+        check = {
+            "is_online": False,
+            "status": "OFFLINE",
+            "latency_ms": None,
+            "jitter_ms": None,
+            "packet_loss_pct": 100.0,
+            "dns_ok": False,
+            "details": f"exception={e}"
+        }
 
-    elif curr_status == "INSTABLE":
-        active = db.get_active_outage()
-        if not active:
-            reason = f"Instabilidade severa: perda {check['packet_loss_pct']}%, latência {check['latency_ms']}ms, DNS {'OK' if check['dns_ok'] else 'FALHA'}"
-            outage_id = db.start_outage(reason, outage_type="PARCIAL")
-            if prev_status == "ONLINE":
-                print(f"\n[{now_str}] [!] [INSTABILIDADE DETECTADA] Conexão degradada. Registrado como Interrupção Parcial #{outage_id}")
-        if (time.time() - _last_speed_test_time) > 180:
-            print(f"[{now_str}] [!] Instabilidade detectada. Disparando teste de velocidade investigativo...")
-            trigger_async_speedtest(reason="instability_detected")
+    # Estágio 2: Persistência da telemetria de ping
+    try:
+        db.record_ping(
+            is_online=check["is_online"],
+            latency_ms=check["latency_ms"],
+            packet_loss_pct=check["packet_loss_pct"],
+            dns_ok=check["dns_ok"],
+            status=check["status"],
+            jitter_ms=check.get("jitter_ms"),
+            details=check["details"]
+        )
+    except Exception as e:
+        print(f"[{now_str}] [AVISO] Falha ao persistir ping no banco: {e}")
 
-    elif curr_status == "ONLINE":
-        active = db.get_active_outage()
-        if active or prev_status in ("OFFLINE", "INSTABLE"):
-            closed = db.close_active_outage()
-            if closed:
-                dur = closed.get("duration_seconds", 0)
-                o_type = closed.get("outage_type", "TOTAL")
-                tipo_lbl = "Queda Total" if o_type == "TOTAL" else "Instabilidade Parcial"
-                print(f"\n[{now_str}] [+] [RECUPERADO] Conexão normalizada após {dur}s ({round(dur/60, 1)} min) de {tipo_lbl}.")
-                trigger_async_speedtest(reason="recovery")
+    # Estágio 3: Heartbeat externo
+    if check["is_online"]:
+        try:
+            send_heartbeat_ping()
+        except Exception:
+            pass
 
-    # Formatação de log no console
+    # Estágio 4: Máquina de estados de quedas (outages)
+    prev_status = last_state.get("status", "UNKNOWN")
+    curr_status = check["status"]
+
+    # Confirmação imediata para filtrar soluços pontuais transitórios de 1 único ping
+    if curr_status != "ONLINE" and prev_status == "ONLINE":
+        time.sleep(1.5)
+        recheck = check_connectivity()
+        if recheck["status"] == "ONLINE":
+            check = recheck
+            curr_status = "ONLINE"
+
+    try:
+        if curr_status == "OFFLINE":
+            reason = f"Perda total de pacotes ({check['packet_loss_pct']}%) e falha nos alvos DNS"
+            outage_id = db.start_outage(reason, outage_type="TOTAL")
+            if prev_status != "OFFLINE":
+                print(f"\n[{now_str}] [!] [QUEDA TOTAL DETECTADA] Conexão caiu. Registrado como Queda #{outage_id}")
+
+        elif curr_status == "INSTABLE":
+            active = db.get_active_outage()
+            if not active:
+                reason = f"Degradação severa: perda {check['packet_loss_pct']}%, latência {check['latency_ms']}ms, DNS {'OK' if check['dns_ok'] else 'FALHA'}"
+                outage_id = db.start_outage(reason, outage_type="PARCIAL")
+                if prev_status == "ONLINE":
+                    print(f"\n[{now_str}] [!] [INSTABILIDADE DETECTADA] Conexão degradada. Registrado como Interrupção Parcial #{outage_id}")
+            if (time.time() - _last_speed_test_time) > 180:
+                print(f"[{now_str}] [!] Instabilidade detectada. Disparando teste de velocidade investigativo...")
+                trigger_async_speedtest(reason="instability_detected")
+
+        elif curr_status == "ONLINE":
+            active = db.get_active_outage()
+            if active or prev_status in ("OFFLINE", "INSTABLE"):
+                closed = db.close_active_outage()
+                if closed:
+                    dur = closed.get("duration_seconds", 0)
+                    o_type = closed.get("outage_type", "TOTAL")
+                    tipo_lbl = "Queda Total" if o_type == "TOTAL" else "Instabilidade Parcial"
+                    print(f"\n[{now_str}] [+] [RECUPERADO] Conexão normalizada após {dur}s ({round(dur/60, 1)} min) de {tipo_lbl}.")
+                    trigger_async_speedtest(reason="recovery")
+    except Exception as e:
+        print(f"[{now_str}] [AVISO] Falha ao atualizar transição de queda no banco: {e}")
+
+    # Estágio 5: Console feedback
     lat_str = f"{check['latency_ms']} ms" if check['latency_ms'] is not None else "-- ms"
     jit_str = f" (Jitter: {check['jitter_ms']} ms)" if check.get("jitter_ms") is not None else ""
     tag = "[OK]      " if curr_status == "ONLINE" else ("[ALERTA]  " if curr_status == "INSTABLE" else "[QUEDA]   ")
@@ -308,8 +392,9 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
 
 def run_monitor_loop(ping_interval: int = 30, speed_interval_min: int = 10):
     """
-    Loop principal do serviço de monitoramento.
-    Roda continuamente a cada 30 segundos.
+    Loop principal do serviço de monitoramento com amostragem adaptativa de alta resolução.
+    Em condições estáveis: checa a cada 30 segundos.
+    Durante instabilidade ou queda: checa a cada 2 segundos para cravar duração exata.
     """
     global _is_running
     db.init_db()
@@ -326,6 +411,18 @@ def run_monitor_loop(ping_interval: int = 30, speed_interval_min: int = 10):
         pass
     print("Banco SQLite: net_monitor.db (WAL)")
     print("=" * 60)
+
+    # Fechamento seguro de quedas órfãs se a máquina/serviço reiniciou durante uma interrupção
+    try:
+        orphan = db.get_active_outage()
+        if orphan:
+            init_check = check_connectivity()
+            if init_check.get("is_online"):
+                closed = db.close_active_outage()
+                if closed:
+                    print(f"[*] Queda pendente #{orphan['id']} encerrada na inicialização do serviço ({closed.get('duration_seconds', 0)}s).")
+    except Exception:
+        pass
 
     # Executa primeiro teste de velocidade inicial na largada
     trigger_async_speedtest(reason="startup")
@@ -345,8 +442,17 @@ def run_monitor_loop(ping_interval: int = 30, speed_interval_min: int = 10):
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Erro inesperado no ciclo de monitoramento: {e}")
 
-        # Aguarda 30 segundos divididos em pequenos passos para responder rápido a Ctrl+C
-        for _ in range(ping_interval):
+        # Amostragem adaptativa: se houver queda ou instabilidade ativa, verifica a cada 2 segundos!
+        # Isso garante que a duração da interrupção seja cronometrada com precisão cirúrgica de segundos.
+        try:
+            active_outage = db.get_active_outage()
+        except Exception:
+            active_outage = None
+
+        is_degraded = (last_state.get("status") != "ONLINE") or (active_outage is not None)
+        current_sleep = 2 if is_degraded else ping_interval
+
+        for _ in range(current_sleep):
             if not _is_running:
                 break
             time.sleep(1)

@@ -164,9 +164,11 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
         # API: Histórico de Auditoria Administrativa
         if path == "/api/audit":
             conn = db.get_connection()
-            cur = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 50;")
-            logs = [dict(r) for r in cur.fetchall()]
-            conn.close()
+            try:
+                cur = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 50;")
+                logs = [dict(r) for r in cur.fetchall()]
+            finally:
+                conn.close()
             self._send_json(logs)
             return
 
@@ -217,10 +219,12 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
                 payload = json.loads(body)
 
                 conn = db.get_connection()
-                with conn:
-                    for k, v in payload.items():
-                        conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?);", (str(k), str(v)))
-                conn.close()
+                try:
+                    with conn:
+                        for k, v in payload.items():
+                            conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?);", (str(k), str(v)))
+                finally:
+                    conn.close()
 
                 db.log_audit("CONFIG_UPDATE", f"Plano atualizado: {payload}", client_ip)
                 self._send_json({"message": "Configurações salvas com sucesso!", "saved": payload})

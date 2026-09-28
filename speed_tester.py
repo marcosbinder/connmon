@@ -115,44 +115,59 @@ def run_speedtest_cli() -> Dict[str, Any]:
 
 def run_speed_test(engine: str = "cloudflare") -> Dict[str, Any]:
     """
-    Executa teste completo de velocidade.
-    Retorna dicionário com métricas ou status de erro em caso de falha total de conexão.
+    Executa teste completo de velocidade com isolamento defensivo entre ping, download e upload.
+    Retorna dicionário com métricas preservadas mesmo em falha de etapas individuais.
     """
     if engine == "speedtest-cli":
         return run_speedtest_cli()
 
-    # Engine padrão: Cloudflare (super leve e rápida)
+    errors = []
+    ping_ms = None
     try:
         ping_ms = measure_ping_http()
-        down_mbps = run_cloudflare_download()
-        up_mbps = run_cloudflare_upload()
+    except Exception as e:
+        errors.append(f"ping: {e}")
 
+    down_mbps = None
+    try:
+        down_mbps = run_cloudflare_download()
+    except Exception as e:
+        errors.append(f"download: {e}")
+
+    up_mbps = None
+    try:
+        up_mbps = run_cloudflare_upload()
+    except Exception as e:
+        errors.append(f"upload: {e}")
+
+    # Se ao menos uma das métricas essenciais foi obtida, preservamos o resultado
+    if down_mbps is not None or up_mbps is not None:
         return {
             "download_mbps": down_mbps,
             "upload_mbps": up_mbps,
             "ping_ms": ping_ms,
-            "status": "SUCCESS",
-            "error_message": None,
+            "status": "SUCCESS" if (down_mbps is not None and up_mbps is not None) else "PARTIAL",
+            "error_message": "; ".join(errors) if errors else None,
             "engine": "cloudflare"
         }
-    except Exception as e:
-        primary_err = str(e)
-        # Se Cloudflare falhar por qualquer motivo e speedtest-cli estiver instalado, tenta fallback
-        try:
-            res = run_speedtest_cli()
-            if res.get("status") == "SUCCESS":
-                return res
-        except Exception:
-            pass
 
-        return {
-            "download_mbps": None,
-            "upload_mbps": None,
-            "ping_ms": None,
-            "status": "FAILED",
-            "error_message": primary_err,
-            "engine": "cloudflare"
-        }
+    # Se ambas as medições de banda falharam, tenta fallback para speedtest-cli
+    primary_err = "; ".join(errors) if errors else "Falha completa na medição de banda Cloudflare"
+    try:
+        res = run_speedtest_cli()
+        if res.get("status") == "SUCCESS":
+            return res
+    except Exception:
+        pass
+
+    return {
+        "download_mbps": None,
+        "upload_mbps": None,
+        "ping_ms": ping_ms,
+        "status": "FAILED",
+        "error_message": primary_err,
+        "engine": "cloudflare"
+    }
 
 
 if __name__ == "__main__":

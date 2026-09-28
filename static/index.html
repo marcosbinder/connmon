@@ -755,13 +755,90 @@
                 border: none !important;
                 box-shadow: none !important;
             }
-            .modal-header, .modal-body {
-                padding: 0 !important;
-            }
             .laudo-sheet {
                 box-shadow: none !important;
                 padding: 0 !important;
             }
+        }
+
+        /* Notificações Flutuantes (Toasts Modernos) */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: none;
+        }
+
+        .toast-item {
+            min-width: 280px;
+            max-width: 440px;
+            background: #1e293b;
+            color: #f8fafc;
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--accent-blue);
+            padding: 12px 18px;
+            border-radius: 8px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+            font-size: 0.88rem;
+            line-height: 1.4;
+            pointer-events: auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            animation: toastSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            transition: opacity 0.25s ease, transform 0.25s ease;
+        }
+
+        .toast-item.success {
+            border-left-color: var(--accent-green);
+        }
+
+        .toast-item.error {
+            border-left-color: var(--accent-red);
+        }
+
+        .toast-item.warning {
+            border-left-color: var(--accent-yellow);
+        }
+
+        @keyframes toastSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px) scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        .toast-item.fade-out {
+            opacity: 0;
+            transform: translateY(10px) scale(0.95);
+        }
+
+        .btn-copy-evid {
+            padding: 4px 10px;
+            font-size: 0.75rem;
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            color: var(--accent-blue);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .btn-copy-evid:hover {
+            background: var(--accent-blue);
+            color: #0f172a;
+            border-color: var(--accent-blue);
+            font-weight: 600;
         }
     </style>
 </head>
@@ -1006,18 +1083,21 @@
 
                 <!-- Dados do Contrato e Assinante -->
                 <div class="laudo-meta-grid">
+                    <div class="laudo-meta-item">Titular do Contrato: <strong id="laudoClientName">--</strong></div>
+                    <div class="laudo-meta-item">Código / Nº Contrato: <strong id="laudoContractNumber">--</strong></div>
+                    <div class="laudo-meta-item" style="grid-column: span 2;">Endereço de Instalação: <strong id="laudoClientAddress">--</strong></div>
                     <div class="laudo-meta-item">Operadora Identificada: <strong id="laudoIsp">--</strong></div>
                     <div class="laudo-meta-item">ASN / Roteamento: <strong id="laudoAsn">--</strong></div>
                     <div class="laudo-meta-item">IP Público Monitorado: <strong id="laudoIp">--</strong></div>
-                    <div class="laudo-meta-item">Localidade: <strong id="laudoLoc">--</strong></div>
-                    <div class="laudo-meta-item">Plano Contratado: <strong id="laudoPlan">--</strong></div>
+                    <div class="laudo-meta-item">Localidade / Região: <strong id="laudoLoc">--</strong></div>
+                    <div class="laudo-meta-item">Plano / Velocidade: <strong id="laudoPlan">--</strong></div>
                     <div class="laudo-meta-item">Período Auditado: <strong id="laudoPeriod">--</strong></div>
                 </div>
 
                 <!-- Resumo Executivo -->
                 <div class="laudo-section">
-                    <div class="laudo-section-title">1. Resumo Executivo de Desempenho</div>
-                    <div class="laudo-kpi-summary">
+                    <div class="laudo-section-title">1. Resumo Executivo de Desempenho e Ressarcimento</div>
+                    <div class="laudo-kpi-summary" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));">
                         <div class="laudo-kpi-box">
                             <div class="val" id="laudoUptime">--%</div>
                             <div class="lbl">Disponibilidade</div>
@@ -1033,6 +1113,10 @@
                         <div class="laudo-kpi-box">
                             <div class="val" id="laudoAvgDown">-- Mbps</div>
                             <div class="lbl">Velocidade Média</div>
+                        </div>
+                        <div class="laudo-kpi-box" style="border: 1px solid #16a34a; background: rgba(34, 197, 94, 0.08);">
+                            <div class="val" id="laudoRefund" style="color: #16a34a;">R$ 0,00</div>
+                            <div class="lbl">Abatimento Estimado</div>
                         </div>
                     </div>
                 </div>
@@ -1063,9 +1147,10 @@
                 <div class="laudo-section">
                     <div class="laudo-section-title">3. Fundamentação Legal e Solicitação de Ressarcimento</div>
                     <div class="laudo-legal">
-                        <strong>• Resolução nº 632/2014 da ANATEL (Arts. 46 a 49):</strong> O usuário tem direito ao desconto proporcional na fatura em qualquer interrupção dos serviços com duração igual ou superior a 30 minutos, ou fracionada, calculado na base de 1/30 do valor mensal por dia ou fração.<br>
+                        <strong>• Resolução nº 632/2014 da ANATEL (Arts. 46 a 49):</strong> O usuário tem direito ao abatimento proporcional do valor da assinatura por interrupção dos serviços, na base de 1/30 (um trinta avos) do valor mensal da fatura a cada período de 24 horas ou fração igual ou superior a 30 minutos.<br>
+                        <strong>• Abatimento Calculado:</strong> <span id="laudoLegalRefund" style="font-weight: 700; color: #15803d;">R$ 0,00</span> (com base na fatura informada de <span id="laudoMonthlyFee">R$ 0,00</span>).<br>
                         <strong>• Resolução nº 717/2019 da ANATEL (RQUAL):</strong> Exige entrega de no mínimo 80% da velocidade média mensal contratada e disponibilidade contínua sem degradação severa de latência.<br>
-                        <strong>• Código de Defesa do Consumidor (Lei 8.078/1990, Arts. 6º, X e 22):</strong> O fornecimento de internet é serviço essencial de prestação contínua. As falhas configuram vício na prestação de serviço, ensejando abatimento de preço e indenização.
+                        <strong>• Código de Defesa do Consumidor (Lei 8.078/1990, Arts. 6º, X e 22):</strong> O fornecimento de internet é serviço essencial de prestação contínua. As interrupções configuram vício de prestação, ensejando abatimento automático e reparação por perdas e danos.
                     </div>
                 </div>
 
@@ -1092,28 +1177,46 @@
 
 <!-- Modal de Configuração -->
 <div id="configModal" class="modal-overlay">
-    <div class="modal-card" style="max-width: 500px;">
+    <div class="modal-card" style="max-width: 540px;">
         <div class="modal-header">
-            <h3>Configurações do Monitor</h3>
+            <h3>Configurações do Monitor e Contrato</h3>
             <button onclick="closeConfigModal()">✕</button>
         </div>
         <div class="modal-body">
-            <div style="margin-bottom: 15px;">
-                <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Nome da Operadora:</label>
+            <div style="margin-bottom: 12px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Nome Completo do Titular:</label>
+                <input type="text" id="cfgClientName" placeholder="Ex: João da Silva" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Código do Assinante / Nº do Contrato:</label>
+                <input type="text" id="cfgContractNumber" placeholder="Ex: 987654321" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Endereço da Instalação / Localidade:</label>
+                <input type="text" id="cfgClientAddress" placeholder="Ex: Rua das Flores, 123 - Curitiba/PR" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Valor Mensal da Fatura (R$ - Para Ressarcimento Anatel):</label>
+                <input type="number" step="0.01" id="cfgMonthlyFee" placeholder="Ex: 149.90" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Nome da Operadora:</label>
                 <input type="text" id="cfgIspName" value="Claro" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
             </div>
-            <div style="margin-bottom: 15px;">
-                <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Download Contratado (Mbps):</label>
-                <input type="number" id="cfgDown" value="500" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+            <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                <div style="flex: 1;">
+                    <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Download Contratado (Mbps):</label>
+                    <input type="number" id="cfgDown" value="500" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+                </div>
+                <div style="flex: 1;">
+                    <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Upload Contratado (Mbps):</label>
+                    <input type="number" id="cfgUp" value="250" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+                </div>
             </div>
-            <div style="margin-bottom: 15px;">
-                <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Upload Contratado (Mbps):</label>
-                <input type="number" id="cfgUp" value="250" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
-            </div>
-            <div style="margin-bottom: 15px;">
-                <label style="display:block; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-secondary);">Testemunha Externa (Healthchecks.io / Uptime Kuma):</label>
+            <div style="margin-bottom: 12px;">
+                <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Testemunha Externa (Healthchecks.io / Uptime Kuma):</label>
                 <input type="url" id="cfgHeartbeat" placeholder="https://hc-ping.com/seu-uuid" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
-                <span style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Envia ping a cada ciclo de conexão online. Se a internet cair, a nuvem externa audita a indisponibilidade.</span>
+                <span style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Envia ping a cada ciclo online para auditoria redundante externa.</span>
             </div>
         </div>
         <div class="modal-footer">
@@ -1175,7 +1278,7 @@
 <script>
     let latencyChartInstance = null;
     let speedChartInstance = null;
-    let currentConfig = { isp_name: "Claro", contracted_download_mbps: "500", contracted_upload_mbps: "250" };
+    let currentConfig = { isp_name: "Claro", contracted_download_mbps: "500", contracted_upload_mbps: "250", client_name: "", contract_number: "", client_address: "", monthly_fee: "0" };
     let currentPublicIp = "";
     let ipVisible = false;
     let selectedHours = 24;
@@ -1183,6 +1286,56 @@
     let customEnd = null;
     let activeOutageStartTime = null;
     let liveTickerInterval = null;
+
+    // Sistema de Notificações Toast Não-Bloqueantes
+    function showToast(message, type = 'success', duration = 3500) {
+        let container = document.getElementById('toastContainer');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'toastContainer';
+            container.className = 'toast-container';
+            document.body.appendChild(container);
+        }
+
+        const toast = document.createElement('div');
+        toast.className = `toast-item ${type}`;
+
+        let icon = '✅';
+        if (type === 'error') icon = '❌';
+        else if (type === 'warning') icon = '⚠️';
+        else if (type === 'info') icon = 'ℹ️';
+
+        toast.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 1.1rem;">${icon}</span>
+                <span>${message}</span>
+            </div>
+            <button onclick="this.parentElement.remove()" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:1rem; padding:0 4px;">✕</button>
+        `;
+
+        container.appendChild(toast);
+
+        setTimeout(() => {
+            toast.classList.add('fade-out');
+            setTimeout(() => toast.remove(), 300);
+        }, duration);
+    }
+
+    function fallbackCopy(text) {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            showToast("📋 Evidência copiada com sucesso!");
+        } catch (e) {
+            showToast("Não foi possível copiar automaticamente.", "error");
+        }
+        document.body.removeChild(ta);
+    }
 
     function toggleIpVisibility() {
         ipVisible = !ipVisible;
@@ -1373,7 +1526,7 @@
         const startVal = document.getElementById('filterStart').value;
         const endVal = document.getElementById('filterEnd').value;
         if (!startVal) {
-            alert("Por favor, selecione a data e hora de início.");
+            showToast("Por favor, selecione a data e hora de início.", "warning");
             return;
         }
         customStart = new Date(startVal).toISOString();
@@ -1651,7 +1804,7 @@
                         <td><strong>${durStr}</strong></td>
                         <td style="color: var(--text-secondary); max-width: 280px;">${o.reason}</td>
                         <td>
-                            <button style="padding: 4px 8px; font-size: 0.75rem;" onclick="copySingleOutage('${startStr}', '${o.end_time ? formatDateTime(o.end_time) : 'Em Andamento'}', '${o.duration_seconds || 0}s', '${o.outage_type || 'TOTAL'}', '${(o.reason||'').replace(/'/g, "")}', '${o.tsa_authority || ""}')">Copiar Evidência</button>
+                            <button class="btn-copy-evid" onclick="copySingleOutage('${startStr}', '${o.end_time ? formatDateTime(o.end_time) : 'Em Andamento'}', '${durStr}', '${o.outage_type || 'TOTAL'}', '${(o.reason||'').replace(/'/g, "\\'")}', '${o.tsa_authority || ""}', '${o.record_hash || ""}')">📋 Copiar Evidência</button>
                         </td>
                     </tr>
                 `;
@@ -1661,12 +1814,31 @@
         }
     }
 
-    function copySingleOutage(start, end, dur, type, reason, tsa) {
-        let tsaLine = tsa ? `\nCarimbo Digital RFC 3161: Certificado por ${tsa} (Hora oficial atômica)` : "";
-        const text = `Protocolo/Evidência de Interrupção:\nTipo: ${type}\nInício: ${start}\nTérmino: ${end}\nDuração: ${dur}\nCausa: ${reason}\nOperadora: ${currentConfig.isp_name}${tsaLine}`;
-        navigator.clipboard.writeText(text).then(() => {
-            alert("Evidência copiada com sucesso!");
-        });
+    function copySingleOutage(start, end, dur, type, reason, tsa, hash) {
+        const isp = currentConfig.isp_name || "Claro";
+        const clientLine = currentConfig.client_name ? `\nAssinante / Titular: ${currentConfig.client_name}` : "";
+        const contractLine = currentConfig.contract_number ? `\nContrato / Código Assinante: ${currentConfig.contract_number}` : "";
+        const addressLine = currentConfig.client_address ? `\nEndereço de Instalação: ${currentConfig.client_address}` : "";
+        const tsaLine = tsa ? `\nCarimbo de Tempo Oficial: Certificado por ${tsa} (RFC 3161 - Hora Legal Atômica)` : "";
+        const hashLine = hash ? `\nAssinatura de Integridade: ${hash.substring(0, 16)}... (HMAC SHA-256)` : "";
+        const durText = String(dur).replace(/<[^>]*>?/gm, '').trim();
+
+        const text = `📌 REGISTRO PERICIAL DE INTERRUPÇÃO DE CONEXÃO
+Operadora: ${isp}${clientLine}${contractLine}${addressLine}
+Tipo de Ocorrência: ${type === 'PARCIAL' ? 'Instabilidade Severa / Degradação' : 'Queda Total de Conectividade'}
+Início: ${start}
+Término: ${end}
+Duração Auditada: ${durText}
+Diagnóstico Técnico: ${reason}${tsaLine}${hashLine}
+Base Legal: Arts. 46 a 49 da Resolução ANATEL nº 632/2014 e Art. 22 do CDC.`;
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast("📋 Evidência pericial copiada com sucesso!");
+            }).catch(() => fallbackCopy(text));
+        } else {
+            fallbackCopy(text);
+        }
     }
 
     // Ações Rápidas
@@ -1674,6 +1846,7 @@
         const btn = document.getElementById('btnSpeedtest');
         btn.disabled = true;
         btn.innerText = '⏳ Medindo velocidade...';
+        showToast("⏳ Teste de velocidade iniciado em segundo plano...", "info");
         try {
             await fetch('/api/trigger_speedtest', { method: 'POST' });
             setTimeout(() => {
@@ -1681,11 +1854,12 @@
                 btn.innerText = '⚡ Testar Conexão Agora';
                 fetchStatus();
                 fetchTimelineMetrics();
+                showToast("✅ Teste de velocidade concluído com sucesso!");
             }, 6000);
         } catch (e) {
             btn.disabled = false;
             btn.innerText = '⚡ Testar Conexão Agora';
-            alert("Erro ao disparar teste de velocidade.");
+            showToast("Erro ao disparar teste de velocidade.", "error");
         }
     }
 
@@ -1713,22 +1887,76 @@
     }
 
     function populateLaudoHtml(data) {
-        const meta = data.contract_info || {};
+        const meta = data.contract_info || data.client || {};
         const sum = data.summary || {};
         const legal = data.legal_compliance || {};
+        const period = data.period || {};
+        const perf = data.performance || {};
 
-        document.getElementById('laudoGeneratedAt').innerText = formatDateTime(data.generated_at);
-        document.getElementById('laudoIsp').innerText = meta.isp || currentConfig.isp_name;
-        document.getElementById('laudoAsn').innerText = meta.asn || "--";
-        document.getElementById('laudoIp').innerText = meta.public_ip || currentPublicIp || "--";
-        document.getElementById('laudoLoc').innerText = [meta.city, meta.region].filter(Boolean).join(', ') || "Brasil";
-        document.getElementById('laudoPlan').innerText = `${meta.contracted_download_mbps}M Down / ${meta.contracted_upload_mbps}M Up`;
-        document.getElementById('laudoPeriod').innerText = `${formatDateTime(data.period.start)} até ${formatDateTime(data.period.end)}`;
+        // Identificação e contrato com múltiplos fallbacks
+        const clientName = meta.client_name || currentConfig.client_name || "Titular Não Informado";
+        const contractNum = meta.contract_number || currentConfig.contract_number || "Não Informado";
+        const clientAddr = meta.client_address || currentConfig.client_address || [meta.city, meta.region].filter(Boolean).join(', ') || "Não Informado";
+        const ispName = meta.isp || meta.isp_name || currentConfig.isp_name || "Provedor";
+        const asn = meta.asn || (currentConfig.isp_info && currentConfig.isp_info.asn) || "--";
+        const publicIp = meta.public_ip || currentPublicIp || "--";
+        const loc = [meta.city, meta.region].filter(Boolean).join(', ') || "Brasil";
 
-        document.getElementById('laudoUptime').innerText = `${sum.uptime_pct}%`;
-        document.getElementById('laudoDowntimeMin').innerText = `${sum.downtime_minutes} min`;
-        document.getElementById('laudoOutagesCount').innerText = `${sum.total_outages_count} (${sum.total_outages} totais, ${sum.partial_outages} parciais)`;
-        document.getElementById('laudoAvgDown').innerText = `${sum.avg_download_mbps} Mbps`;
+        const downMbps = meta.contracted_download_mbps || currentConfig.contracted_download_mbps || 500;
+        const upMbps = meta.contracted_upload_mbps || currentConfig.contracted_upload_mbps || 250;
+        const monthlyFee = parseFloat(meta.monthly_fee || currentConfig.monthly_fee || 0);
+
+        // Período e emissão
+        const genAt = period.generated_at || data.generated_at || new Date().toISOString();
+        const startPeriod = period.since || period.start || data.start_time || "--";
+        const endPeriod = period.until || period.end || data.end_time || "--";
+
+        if (document.getElementById('laudoClientName')) {
+            document.getElementById('laudoClientName').innerText = clientName;
+        }
+        if (document.getElementById('laudoContractNumber')) {
+            document.getElementById('laudoContractNumber').innerText = contractNum;
+        }
+        if (document.getElementById('laudoClientAddress')) {
+            document.getElementById('laudoClientAddress').innerText = clientAddr;
+        }
+
+        document.getElementById('laudoGeneratedAt').innerText = genAt.includes('T') ? formatDateTime(genAt) : genAt;
+        document.getElementById('laudoIsp').innerText = ispName;
+        document.getElementById('laudoAsn').innerText = asn;
+        document.getElementById('laudoIp').innerText = publicIp;
+        document.getElementById('laudoLoc').innerText = loc;
+        document.getElementById('laudoPlan').innerText = `${downMbps}M Down / ${upMbps}M Up`;
+        document.getElementById('laudoPeriod').innerText = `${formatDateTime(startPeriod)} até ${formatDateTime(endPeriod)}`;
+
+        // Resumo Executivo
+        const uptimeVal = sum.uptime_pct !== undefined ? sum.uptime_pct : 100.0;
+        document.getElementById('laudoUptime').innerText = `${uptimeVal}%`;
+
+        const downMinVal = sum.total_downtime_min !== undefined ? sum.total_downtime_min : (sum.downtime_minutes !== undefined ? sum.downtime_minutes : 0);
+        document.getElementById('laudoDowntimeMin').innerText = `${downMinVal} min`;
+
+        const totalTot = sum.total_outages_count !== undefined ? sum.total_outages_count : (sum.total_outages || 0);
+        const partialTot = sum.partial_outages_count !== undefined ? sum.partial_outages_count : (sum.partial_outages || 0);
+        const allTot = sum.all_outages_count !== undefined ? sum.all_outages_count : (totalTot + partialTot);
+        document.getElementById('laudoOutagesCount').innerText = `${allTot} (${totalTot} totais, ${partialTot} parciais)`;
+
+        const avgDownVal = sum.avg_download_mbps !== undefined ? sum.avg_download_mbps : (perf.avg_down !== undefined ? perf.avg_down : 0);
+        document.getElementById('laudoAvgDown').innerText = `${avgDownVal} Mbps`;
+
+        // Cálculo de ressarcimento financeiro em R$ (Resolução Anatel 632)
+        const refundEstimate = meta.refund_estimate_reais !== undefined ? meta.refund_estimate_reais : (data.refund_estimate_reais || 0);
+        const refundFormatted = `R$ ${Number(refundEstimate).toFixed(2).replace('.', ',')}`;
+        const feeFormatted = monthlyFee > 0 ? `R$ ${monthlyFee.toFixed(2).replace('.', ',')}` : 'não informada';
+
+        const elRefund = document.getElementById('laudoRefund');
+        if (elRefund) elRefund.innerText = refundFormatted;
+
+        const elLegalRefund = document.getElementById('laudoLegalRefund');
+        if (elLegalRefund) elLegalRefund.innerText = refundFormatted;
+
+        const elMonthlyFee = document.getElementById('laudoMonthlyFee');
+        if (elMonthlyFee) elMonthlyFee.innerText = feeFormatted;
 
         // Renderiza tabela de ocorrências no laudo
         const tbody = document.getElementById('laudoOutagesBody');
@@ -1754,7 +1982,8 @@
         }
 
         const proofEl = document.getElementById('laudoCryptoProof');
-        proofEl.innerHTML = `🔒 Prova Pericial de Autenticidade: Algoritmo HMAC SHA-256 encadeado | ${data.integrity ? data.integrity.tsa_verified_outages : 0} carimbos RFC 3161 verificados | Assinatura íntegra. Proibida alteração unilateral.`;
+        const verifiedTsa = data.integrity ? data.integrity.tsa_verified_outages : 0;
+        proofEl.innerHTML = `🔒 Prova Pericial de Autenticidade: Algoritmo HMAC SHA-256 encadeado | ${verifiedTsa} carimbos RFC 3161 verificados | Assinatura íntegra. Proibida alteração unilateral.`;
     }
 
     function downloadLaudoPdf() {
@@ -1774,6 +2003,7 @@
 
         html2pdf().set(opt).from(element).save().then(() => {
             btn.innerText = "✅ PDF Gerado com Sucesso!";
+            showToast("📥 Laudo técnico em PDF gerado com sucesso!");
             setTimeout(() => {
                 btn.innerText = originalText;
                 btn.disabled = false;
@@ -1782,7 +2012,7 @@
             console.error("Erro ao gerar PDF:", err);
             btn.innerText = originalText;
             btn.disabled = false;
-            alert("Erro ao processar PDF. Você também pode usar a opção 'Imprimir' para salvar como PDF.");
+            showToast("Erro ao processar PDF. Você também pode usar a opção 'Imprimir' para salvar como PDF.", "error");
         });
     }
 
@@ -1798,15 +2028,20 @@
                 const btn = document.getElementById('btnCopyLaudo');
                 const orig = btn.innerText;
                 btn.innerText = "✅ Texto Copiado!";
+                showToast("📋 Texto completo do laudo pericial copiado!");
                 setTimeout(() => { btn.innerText = orig; }, 2000);
-            });
+            }).catch(() => fallbackCopy(text));
         } catch (e) {
-            alert("Erro ao copiar texto do laudo.");
+            showToast("Erro ao copiar texto do laudo.", "error");
         }
     }
 
-    // Modal de Config
+    // Modal de Configuração e Dados Contratuais
     function openConfigModal() {
+        document.getElementById('cfgClientName').value = currentConfig.client_name || "";
+        document.getElementById('cfgContractNumber').value = currentConfig.contract_number || "";
+        document.getElementById('cfgClientAddress').value = currentConfig.client_address || "";
+        document.getElementById('cfgMonthlyFee').value = currentConfig.monthly_fee || "";
         document.getElementById('cfgIspName').value = currentConfig.isp_name || "Claro";
         document.getElementById('cfgDown').value = currentConfig.contracted_download_mbps || 500;
         document.getElementById('cfgUp').value = currentConfig.contracted_upload_mbps || 250;
@@ -1820,7 +2055,11 @@
 
     async function saveConfig() {
         const payload = {
-            isp_name: document.getElementById('cfgIspName').value,
+            client_name: document.getElementById('cfgClientName').value.trim(),
+            contract_number: document.getElementById('cfgContractNumber').value.trim(),
+            client_address: document.getElementById('cfgClientAddress').value.trim(),
+            monthly_fee: document.getElementById('cfgMonthlyFee').value.trim(),
+            isp_name: document.getElementById('cfgIspName').value.trim(),
             contracted_download_mbps: document.getElementById('cfgDown').value,
             contracted_upload_mbps: document.getElementById('cfgUp').value,
             heartbeat_url: document.getElementById('cfgHeartbeat').value.trim()
@@ -1832,11 +2071,11 @@
                 body: JSON.stringify(payload)
             });
             closeConfigModal();
-            fetchStatus();
-            fetchTimelineMetrics();
-            alert("Configurações salvas com sucesso!");
+            await fetchStatus();
+            await fetchTimelineMetrics();
+            showToast("Configurações e dados contratuais salvos com sucesso!");
         } catch (e) {
-            alert("Erro ao salvar configurações.");
+            showToast("Erro ao salvar configurações.", "error");
         }
     }
 
@@ -1902,12 +2141,12 @@
                 body: JSON.stringify({ days: parseInt(days) })
             });
             const data = await res.json();
-            alert(`Limpeza concluída com sucesso!\nPings liberados: ${data.deleted_pings}\nTestes removidos: ${data.deleted_speed_tests}`);
+            showToast(`Limpeza concluída! Pings liberados: ${data.deleted_pings} | Testes removidos: ${data.deleted_speed_tests}`);
             fetchStatus();
             fetchTimelineMetrics();
             checkIntegrity();
         } catch (e) {
-            alert("Erro ao executar limpeza.");
+            showToast("Erro ao executar limpeza.", "error");
         }
     }
 
@@ -1936,9 +2175,9 @@
             await fetchTimelineMetrics();
             await fetchOutagesTable();
             await checkIntegrity();
-            alert("Todo o histórico foi apagado com sucesso.");
+            showToast("Todo o histórico foi apagado com sucesso!");
         } catch (e) {
-            alert("Erro ao resetar histórico.");
+            showToast("Erro ao resetar histórico.", "error");
         }
     }
 
