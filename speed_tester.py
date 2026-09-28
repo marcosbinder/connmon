@@ -136,9 +136,12 @@ def run_speed_test(engine: str = "cloudflare") -> Dict[str, Any]:
             "engine": "cloudflare"
         }
     except Exception as e:
+        primary_err = str(e)
         # Se Cloudflare falhar por qualquer motivo e speedtest-cli estiver instalado, tenta fallback
         try:
-            return run_speedtest_cli()
+            res = run_speedtest_cli()
+            if res.get("status") == "SUCCESS":
+                return res
         except Exception:
             pass
 
@@ -147,7 +150,7 @@ def run_speed_test(engine: str = "cloudflare") -> Dict[str, Any]:
             "upload_mbps": None,
             "ping_ms": None,
             "status": "FAILED",
-            "error_message": str(e),
+            "error_message": primary_err,
             "engine": "cloudflare"
         }
 
