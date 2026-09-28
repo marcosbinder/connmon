@@ -814,7 +814,7 @@ def verify_database_integrity(db_path: str = DB_PATH) -> Dict[str, Any]:
                     chain_broken_pings += 1
             last_ping_hash = p["record_hash"]
 
-    cur = conn.execute("SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsr_token, tsa_authority FROM outages ORDER BY id ASC;")
+    cur = conn.execute("SELECT id, start_time, end_time, duration_seconds, reason, status, record_hash, prev_hash, tsr_token, tsa_authority, outage_type FROM outages ORDER BY id ASC;")
     outages = cur.fetchall()
     checked_outages = 0
     tampered_outages = 0
@@ -826,17 +826,25 @@ def verify_database_integrity(db_path: str = DB_PATH) -> Dict[str, Any]:
         if o["record_hash"]:
             checked_outages += 1
             prev_h = o["prev_hash"] or "GENESIS"
+            o_type = o["outage_type"] or "TOTAL"
             if o["status"] == "CLOSED":
+                sig_typed = f"{prev_h}|{o['start_time']}|{o['end_time']}|{o['duration_seconds']}|{o_type}|{o['reason']}|CLOSED"
                 sig_chained = f"{prev_h}|{o['start_time']}|{o['end_time']}|{o['duration_seconds']}|{o['reason']}|CLOSED"
                 sig_legacy = f"{o['start_time']}|{o['end_time']}|{o['duration_seconds']}|{o['reason']}|CLOSED"
+                valid_hash = (
+                    compute_hash(sig_typed) == o["record_hash"] or
+                    compute_hash(sig_chained) == o["record_hash"] or
+                    compute_hash(sig_legacy) == o["record_hash"]
+                )
             else:
+                sig_typed = f"{prev_h}|{o['start_time']}|{o_type}|{o['reason']}|OPEN"
                 sig_chained = f"{prev_h}|{o['start_time']}|{o['reason']}|OPEN"
                 sig_legacy = f"{o['start_time']}|{o['reason']}|OPEN"
-
-            valid_hash = (
-                compute_hash(sig_chained) == o["record_hash"] or
-                compute_hash(sig_legacy) == o["record_hash"]
-            )
+                valid_hash = (
+                    compute_hash(sig_typed) == o["record_hash"] or
+                    compute_hash(sig_chained) == o["record_hash"] or
+                    compute_hash(sig_legacy) == o["record_hash"]
+                )
             if not valid_hash:
                 tampered_outages += 1
 
