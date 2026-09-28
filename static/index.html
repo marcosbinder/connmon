@@ -1362,13 +1362,19 @@
     function formatTime(isoString) {
         if (!isoString) return "--";
         const d = new Date(isoString);
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    }
+
+    function formatShortTime(isoString) {
+        if (!isoString) return "--";
+        const d = new Date(isoString);
+        return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', hour12: false });
     }
 
     function formatDateTime(isoString) {
         if (!isoString) return "--";
         const d = new Date(isoString);
-        return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
     }
 
     // Busca status atual
@@ -1566,7 +1572,7 @@
 
     function renderLatencyChart(pings) {
         const ctx = document.getElementById('latencyChart').getContext('2d');
-        const labels = pings.map(p => formatTime(p.timestamp));
+        const labels = pings.map(p => formatShortTime(p.timestamp));
         const latencies = pings.map(p => p.latency_ms);
         const losses = pings.map(p => p.packet_loss_pct);
 
@@ -1584,24 +1590,27 @@
                 labels: labels,
                 datasets: [
                     {
+                        type: 'line',
                         label: 'Latência (ms)',
                         data: latencies,
                         borderColor: '#38bdf8',
-                        backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                        backgroundColor: 'rgba(56, 189, 248, 0.08)',
                         borderWidth: 2,
                         fill: true,
-                        tension: 0.2,
-                        pointRadius: pings.length > 120 ? 0 : 2,
+                        tension: 0.25,
+                        pointRadius: 0,
+                        pointHoverRadius: 5,
                         yAxisID: 'y'
                     },
                     {
+                        type: 'bar',
                         label: 'Perda de Pacotes (%)',
                         data: losses,
+                        backgroundColor: 'rgba(239, 68, 68, 0.75)',
                         borderColor: '#ef4444',
-                        backgroundColor: 'rgba(239, 68, 68, 0.3)',
-                        borderWidth: 1.5,
-                        fill: false,
-                        pointRadius: losses.map(l => l > 0 ? 3 : 0),
+                        borderWidth: 1,
+                        borderRadius: 2,
+                        barPercentage: 0.5,
                         yAxisID: 'y1'
                     }
                 ]
@@ -1612,14 +1621,14 @@
                 interaction: { mode: 'index', intersect: false },
                 scales: {
                     x: {
-                        grid: { color: '#334155' },
-                        ticks: { color: '#94a3b8', maxTicksLimit: 8 }
+                        grid: { color: 'rgba(51, 65, 85, 0.4)' },
+                        ticks: { color: '#94a3b8', maxTicksLimit: 10 }
                     },
                     y: {
                         type: 'linear',
                         display: true,
                         position: 'left',
-                        grid: { color: '#334155' },
+                        grid: { color: 'rgba(51, 65, 85, 0.4)' },
                         ticks: { color: '#38bdf8' },
                         title: { display: true, text: 'Latência (ms)', color: '#38bdf8' }
                     },
@@ -1630,12 +1639,18 @@
                         min: 0,
                         max: 100,
                         grid: { drawOnChartArea: false },
-                        ticks: { color: '#ef4444' },
+                        ticks: { color: '#ef4444', stepSize: 25 },
                         title: { display: true, text: 'Perda (%)', color: '#ef4444' }
                     }
                 },
                 plugins: {
                     legend: { labels: { color: '#f8fafc' } },
+                    tooltip: {
+                        backgroundColor: '#0f172a',
+                        borderColor: '#334155',
+                        borderWidth: 1,
+                        padding: 10
+                    },
                     zoom: {
                         pan: { enabled: true, mode: 'x' },
                         zoom: {
@@ -1657,7 +1672,7 @@
 
     function renderSpeedChart(speeds) {
         const ctx = document.getElementById('speedChart').getContext('2d');
-        const labels = speeds.map(s => formatTime(s.timestamp));
+        const labels = speeds.map(s => formatShortTime(s.timestamp));
         const downloads = speeds.map(s => s.download_mbps);
         const uploads = speeds.map(s => s.upload_mbps);
         const contracted = parseFloat(currentConfig.contracted_download_mbps) || 500;
@@ -1681,10 +1696,11 @@
                         label: 'Download (Mbps)',
                         data: downloads,
                         borderColor: '#22c55e',
-                        backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                        backgroundColor: 'rgba(34, 197, 94, 0.08)',
                         borderWidth: 2,
-                        tension: 0.2,
-                        pointRadius: 4,
+                        tension: 0.25,
+                        pointRadius: 0,
+                        pointHoverRadius: 6,
                         fill: true
                     },
                     {
@@ -1693,16 +1709,19 @@
                         borderColor: '#a855f7',
                         backgroundColor: 'transparent',
                         borderWidth: 2,
-                        tension: 0.2,
-                        pointRadius: 4
+                        tension: 0.25,
+                        pointRadius: 0,
+                        pointHoverRadius: 6,
+                        fill: false
                     },
                     {
                         label: 'Contratado (' + contracted + 'M)',
                         data: contractedLine,
                         borderColor: '#64748b',
-                        borderDash: [5, 5],
+                        borderDash: [6, 6],
                         borderWidth: 1.5,
                         pointRadius: 0,
+                        pointHoverRadius: 0,
                         fill: false
                     }
                 ]
