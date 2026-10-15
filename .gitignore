@@ -3,23 +3,67 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# SQLite databases & logs
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.pyz
+
+# SQLite databases & logs (NetMon runtime data)
 *.db
 *.db-wal
 *.db-shm
 *.log
 
-# Environments
+# CSV exports & forensic dossier outputs
+*.csv
+Dossie_Pericial_*.zip
+laudo_tecnico_*.txt
+
+# Virtual Environments
 .venv/
 venv/
 ENV/
 env/
+env.bak/
+venv.bak/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Linter & type-checking caches
+.ruff_cache/
+.mypy_cache/
 
 # IDE & OS files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 
-# Agent skills & configs local to developer machine
+# Agent scratch & internal configs
 .agents/

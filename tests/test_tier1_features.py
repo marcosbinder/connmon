@@ -7,15 +7,12 @@ Derived from ORIGINAL_REQUEST.md, PROJECT.md, and TEST_INFRA.md.
 import re
 import time
 import socket
-import sqlite3
 import threading
 from datetime import datetime, timezone, timedelta
-import pytest
 
 import db
 import web_server
 import monitor
-import isp_detector
 
 
 # ==============================================================================
@@ -755,7 +752,8 @@ def test_f12_report_json_zero_undefined_null_nan(live_server, api_client):
     raw_text = api_client.get_text(f"{live_server}/api/report_json")
     # Verify no unhandled undefined strings in payload
     assert "undefined" not in raw_text.lower()
-    assert "nan" not in raw_text.lower()
+    assert not re.search(r'\bnan\b', raw_text.lower())
+
 
 
 # ==============================================================================

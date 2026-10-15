@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 import time
+import signal
 
 # Assegura codificação correta para qualquer console
 if hasattr(sys.stdout, "reconfigure"):
@@ -23,14 +24,20 @@ import speed_tester
 
 
 def parse_args():
+    env_port_str = os.environ.get("NETMON_PORT") or os.environ.get("PORT") or "8080"
+    try:
+        default_port = int(env_port_str)
+    except ValueError:
+        default_port = 8080
+
     parser = argparse.ArgumentParser(
         description="NetMon: monitor de estabilidade e velocidade de internet"
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=8080,
-        help="Porta para o Dashboard Web (padrão: 8080)"
+        default=default_port,
+        help=f"Porta para o Dashboard Web (padrão: {default_port})"
     )
     parser.add_argument(
         "--host",
@@ -47,8 +54,8 @@ def parse_args():
     parser.add_argument(
         "--speed-interval",
         type=int,
-        default=10,
-        help="Intervalo de teste completo de velocidade em minutos (padrão: 10 min)"
+        default=5,
+        help="Intervalo de teste completo de velocidade em minutos (padrão: 5 min)"
     )
     parser.add_argument(
         "--monitor-only",
@@ -118,6 +125,21 @@ def main():
     print("NetMon - Monitor de Conexao e Metricas de Rede")
     print("=" * 60)
 
+    def handle_shutdown(signum=None, frame=None):
+        print(f"\n[!] Encerrando monitor e servidor web com segurança (sinal {signum})...")
+        monitor.stop_monitor()
+        web_server.stop_server()
+        time.sleep(0.5)
+        print("[*] Encerrado com sucesso. Dados preservados em net_monitor.db.")
+        sys.exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, handle_shutdown)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, handle_shutdown)
+    except Exception:
+        pass
+
     # Modo apenas Web
     if args.web_only:
         print(f"[*] Modo: Apenas Dashboard Web (Porta {args.port})")
@@ -132,9 +154,8 @@ def main():
                 ping_interval=args.ping_interval,
                 speed_interval_min=args.speed_interval
             )
-        except KeyboardInterrupt:
-            print("\nEncerrando monitor...")
-            monitor.stop_monitor()
+        except (KeyboardInterrupt, SystemExit):
+            handle_shutdown()
         return
 
     # Modo Padrão Completo: Monitor em Thread + Servidor Web
@@ -144,7 +165,7 @@ def main():
         print(f"[*] Painel web em outros aparelhos: http://{local_ip}:{args.port} (celular, notebook, etc)")
     print(f"[*] Checagem de conectividade: a cada {args.ping_interval} segundos")
     print(f"[*] Teste de velocidade completo: a cada {args.speed_interval} minutos (e na deteccao de instabilidade)")
-    print(f"[*] Pressione CTRL+C a qualquer momento para encerrar com seguranca.")
+    print("[*] Pressione CTRL+C ou envie SIGTERM (PM2) a qualquer momento para encerrar com seguranca.")
     print("-" * 60)
 
     monitor_thread = threading.Thread(
@@ -159,11 +180,8 @@ def main():
 
     try:
         web_server.start_server(host=args.host, port=args.port)
-    except KeyboardInterrupt:
-        print("\n[!] Encerrando monitor e servidor web...")
-        monitor.stop_monitor()
-        time.sleep(1)
-        print("[*] Encerrado com sucesso. Dados preservados em net_monitor.db.")
+    except (KeyboardInterrupt, SystemExit):
+        handle_shutdown()
 
 
 if __name__ == "__main__":

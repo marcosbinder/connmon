@@ -1,0 +1,117 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "connmon"
+version = "1.0.0"
+description = "Lightweight, zero-dependency network monitor & ISP outage auditor in Python (~13MB RAM)."
+readme = "README.md"
+authors = [
+    { name = "Marcos Binder", email = "marcosbinder@users.noreply.github.com" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = [
+    "network-monitoring",
+    "isp-monitor",
+    "sqlite",
+    "zero-dependencies",
+    "rfc3161",
+    "speedtest",
+    "dashboard",
+    "homelab",
+    "telemetry",
+    "uptime",
+    "latency"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Telecommunications Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: Internet",
+    "Topic :: Utilities"
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1.0"
+]
+
+[project.scripts]
+connmon = "run:main"
+
+[project.urls]
+Homepage = "https://github.com/marcosbinder/connmon"
+Documentation = "https://github.com/marcosbinder/connmon#readme"
+Repository = "https://github.com/marcosbinder/connmon.git"
+Issues = "https://github.com/marcosbinder/connmon/issues"
+Changelog = "https://github.com/marcosbinder/connmon/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+py-modules = [
+    "run",
+    "monitor",
+    "speed_tester",
+    "db",
+    "web_server",
+    "isp_detector",
+    "rfc3161",
+    "notifier",
+    "pdf_generator",
+    "traceroute_tracer"
+]
+
+[tool.setuptools.package-data]
+"*" = ["static/*", "cloudflare_probe/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    ".agents"
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501", # Line too long (handled gracefully, lines are formatted for clarity)
+    "E402", # Module level import not at top of file (used for sys.stdout reconfigure/conditional imports)
+    "E722", # Do not use bare except (used defensively in fallback network probes)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F841", "E402"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning"
+]

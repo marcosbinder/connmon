@@ -10,9 +10,7 @@ Derived from ORIGINAL_REQUEST.md, PROJECT.md, and TEST_INFRA.md.
 """
 
 import math
-import time
 from datetime import datetime, timezone, timedelta
-import pytest
 
 import db
 import monitor

@@ -1,0 +1,19 @@
+[Unit]
+Description=connmon Network Telemetry & ISP Auditor Daemon
+Documentation=https://github.com/marcosbinder/connmon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/connmon
+ExecStart=/usr/bin/python3 /opt/connmon/run.py --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -10,12 +10,30 @@ import json
 import urllib.parse
 import os
 import sys
-import threading
-from typing import Any, Dict
+import zipfile
+import io
+import hashlib
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 import db
 import monitor
-import speed_tester
+
+# Módulos opcionais — não disponíveis em todas as instalações
+try:
+    import pdf_generator
+except ImportError:
+    pdf_generator = None  # type: ignore
+
+try:
+    import traceroute_tracer
+except ImportError:
+    traceroute_tracer = None  # type: ignore
+
+try:
+    import notifier
+except ImportError:
+    notifier = None  # type: ignore
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -52,6 +70,17 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_bytes(self, data: bytes, content_type: str = "application/octet-stream", status: int = 200, filename: str = None):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _send_file(self, filepath: str, content_type: str = "text/html; charset=utf-8"):
         if not os.path.exists(filepath):
@@ -132,7 +161,7 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
             end = params.get("end", [None])[0]
             if "hours" in params:
                 try:
-                    hours = int(params["hours"][0])
+                    hours = max(1, min(8760, int(params["hours"][0])))
                 except ValueError:
                     pass
             report_text = db.generate_isp_report_text(hours=hours, start_time=start, end_time=end)
@@ -148,7 +177,7 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
             end = params.get("end", [None])[0]
             if "hours" in params:
                 try:
-                    hours = int(params["hours"][0])
+                    hours = max(1, min(8760, int(params["hours"][0])))
                 except ValueError:
                     pass
             report_data = db.generate_isp_report_data(hours=hours, start_time=start, end_time=end)
@@ -183,6 +212,91 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json({"error": str(e)}, status=400)
             return
 
+        # API: Dossiê Pericial Completo em Pacote ZIP
+        if path == "/api/export_dossier":
+            hours = 72
+            start = params.get("start", [None])[0]
+            end = params.get("end", [None])[0]
+            if "hours" in params:
+                try:
+                    hours = max(1, min(8760, int(params["hours"][0])))
+                except ValueError:
+                    pass
+
+            try:
+                if pdf_generator is None:
+                    self._send_json({"error": "Módulo pdf_generator não instalado neste servidor."}, status=501)
+                    return
+                # 1. Dados do laudo técnico e geração do PDF pericial oficial
+                report_data = db.generate_isp_report_data(hours=hours, start_time=start, end_time=end)
+                pdf_bytes = pdf_generator.generate_laudo_pdf(report_data)
+
+                # 2. Telemetria em CSV do período selecionado
+                pings_csv = db.export_csv_data("pings", hours=hours, start_time=start, end_time=end).encode("utf-8")
+                speed_csv = db.export_csv_data("speed_tests", hours=hours, start_time=start, end_time=end).encode("utf-8")
+
+                # 3. Cadeia de custódia e prova criptográfica ABNT NBR ISO/IEC 27037
+                custody_txt = db.generate_custody_chain_text(hours=hours, start_time=start, end_time=end).encode("utf-8")
+
+                # 4. Checksums SHA-256 dos artefatos periciais (não-repúdio)
+                h_pdf = hashlib.sha256(pdf_bytes).hexdigest()
+                h_pings = hashlib.sha256(pings_csv).hexdigest()
+                h_speed = hashlib.sha256(speed_csv).hexdigest()
+                h_custody = hashlib.sha256(custody_txt).hexdigest()
+
+                now_utc = datetime.now(timezone.utc).isoformat()
+                combined_hashes = f"{h_pdf}|{h_pings}|{h_speed}|{h_custody}"
+                dossier_sig = db.compute_hash(combined_hashes)
+
+                sig_content = (
+                    "# ==============================================================================\n"
+                    "# DOSSIÊ PERICIAL FORENSE NETMON - CHECKSUM SHA-256 E ASSINATURA DE NÃO-REPÚDIO\n"
+                    "# Norma de Cadeia de Custódia Digital: ABNT NBR ISO/IEC 27037:2013\n"
+                    f"# Data/Hora de Geração: {now_utc} UTC\n"
+                    f"# Operadora Auditada: {report_data.get('client', {}).get('isp_name', 'Claro')}\n"
+                    f"# Assinatura Digital do Dossiê (HMAC-SHA256): {dossier_sig}\n"
+                    "# ==============================================================================\n\n"
+                    f"{h_pdf}  Laudo_Tecnico_Oficial.pdf\n"
+                    f"{h_pings}  Telemetria_Pings.csv\n"
+                    f"{h_speed}  Testes_Velocidade.csv\n"
+                    f"{h_custody}  Cadeia_Custodia_Hashes.txt\n"
+                ).encode("utf-8")
+
+                # 5. Empacotamento em ZIP seguro em memória
+                zip_buf = io.BytesIO()
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr("Laudo_Tecnico_Oficial.pdf", pdf_bytes)
+                    zf.writestr("Telemetria_Pings.csv", pings_csv)
+                    zf.writestr("Testes_Velocidade.csv", speed_csv)
+                    zf.writestr("Cadeia_Custodia_Hashes.txt", custody_txt)
+                    zf.writestr("Checksum_SHA256.sig", sig_content)
+
+                zip_payload = zip_buf.getvalue()
+                date_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"Dossie_Pericial_NetMon_{date_tag}.zip"
+                self._send_bytes(zip_payload, content_type="application/zip", filename=filename)
+            except Exception as e:
+                self._send_json({"error": f"Falha na compilação do dossiê pericial: {e}"}, status=500)
+            return
+
+        # API: Diagnósticos de Rastreamento de Rota (Traceroute Forense)
+        if path == "/api/traces":
+            limit = 50
+            if "limit" in params:
+                try:
+                    limit = int(params["limit"][0])
+                except ValueError:
+                    pass
+            outage_id = None
+            if "outage_id" in params:
+                try:
+                    outage_id = int(params["outage_id"][0])
+                except ValueError:
+                    pass
+            traces = db.get_route_traces(limit=limit, outage_id=outage_id)
+            self._send_json(traces)
+            return
+
         # Arquivos estáticos adicionais se houver
         if path.startswith("/static/"):
             rel_path = path[8:]
@@ -209,6 +323,27 @@ class NetworkMonitorHandler(http.server.BaseHTTPRequestHandler):
                 "message": "Teste de velocidade disparado com sucesso em segundo plano.",
                 "status": "QUEUED"
             })
+            return
+
+        # Disparar rastreamento forense manual de rota (Traceroute)
+        if path == "/api/trigger_traceroute":
+            if traceroute_tracer is not None:
+                traceroute_tracer.trigger_async_traceroute(reason="manual_web", force=True)
+                self._send_json({
+                    "message": "Auditoria pericial de rota disparada em segundo plano.",
+                    "status": "QUEUED"
+                })
+            else:
+                self._send_json({"error": "Módulo traceroute_tracer não instalado neste servidor."}, status=501)
+            return
+
+        # Testar webhook e alertas (Discord e Telegram)
+        if path == "/api/test_notification":
+            if notifier is not None:
+                results = notifier.test_notifications()
+                self._send_json(results)
+            else:
+                self._send_json({"error": "Módulo notifier não instalado neste servidor."}, status=501)
             return
 
         # Atualizar configurações (ex: plano contratado) com auditoria
@@ -271,21 +406,56 @@ def get_local_ip() -> str:
     return ip
 
 
+_server_instance: Optional[ThreadingHTTPServer] = None
+
+
+def stop_server():
+    """Encerra o servidor web de forma graciosa e segura."""
+    global _server_instance
+    if _server_instance is not None:
+        try:
+            _server_instance.shutdown()
+        except Exception:
+            pass
+
+
 def start_server(host: str = "0.0.0.0", port: int = 8080):
-    """Inicia o servidor web HTTP leve."""
+    """Inicia o servidor web HTTP leve com suporte a parada graciosa e tratamento de porta."""
+    global _server_instance
     db.init_db()
-    server = ThreadingHTTPServer((host, port), NetworkMonitorHandler)
+
+    env_port = os.environ.get("NETMON_PORT") or os.environ.get("PORT")
+    if env_port:
+        try:
+            port = int(env_port)
+        except ValueError:
+            pass
+
+    try:
+        server = ThreadingHTTPServer((host, port), NetworkMonitorHandler)
+    except OSError as e:
+        if getattr(e, "errno", None) in (98, 10048) or "already in use" in str(e).lower():
+            print(f"[!] ERRO: A porta {port} já está em uso por outro processo (ex: outro NetMon ou Nginx).")
+            print("    Para especificar outra porta, use: python run.py --port <nova_porta> ou defina NETMON_PORT=<porta>.")
+            sys.exit(1)
+        raise
+
+    _server_instance = server
     local_ip = get_local_ip()
-    print(f"Servidor Web ativo:")
+    print("Servidor Web ativo:")
     print(f"  Local:   http://localhost:{port}")
     if local_ip != "127.0.0.1":
         print(f"  Rede:    http://{local_ip}:{port} (qualquer aparelho no mesmo Wi-Fi/cabo)")
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
-        server.server_close()
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        _server_instance = None
 
 
 if __name__ == "__main__":

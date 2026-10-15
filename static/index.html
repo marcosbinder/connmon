@@ -415,6 +415,56 @@
             width: 100%;
         }
 
+        .chart-canvas-container canvas {
+            cursor: grab;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        .chart-canvas-container canvas:active {
+            cursor: grabbing;
+        }
+
+        .chart-actions-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .chart-presets {
+            display: inline-flex;
+            align-items: center;
+            background: #0f172a;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 2px;
+            gap: 2px;
+        }
+
+        .btn-chart-pill {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 0.72rem;
+            font-weight: 500;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .btn-chart-pill:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .btn-chart-pill.active {
+            background: var(--accent-blue);
+            color: #ffffff;
+            font-weight: 600;
+        }
+
         .btn-reset-zoom {
             font-size: 0.75rem;
             padding: 4px 8px;
@@ -427,6 +477,32 @@
         .btn-reset-zoom:hover {
             color: var(--text-primary);
             border-color: var(--accent-blue);
+        }
+
+        .chart-controls {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: #0f172a;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 2px 4px;
+        }
+
+        .btn-chart-nav {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .btn-chart-nav:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
         }
 
         /* Tabela de Quedas */
@@ -860,6 +936,10 @@
                 ⚡ Testar Conexão Agora
             </button>
 
+            <button class="btn-success" id="btnDownloadDossier" onclick="downloadDossierZip()" style="background: #059669; border: 1px solid #10b981; color: white; border-radius: 6px; padding: 7px 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px;" title="Baixar pacote pericial ZIP completo (Laudo PDF, CSVs, cadeia de custódia e checksum SHA-256)">
+                📦 Dossiê Pericial (.ZIP)
+            </button>
+
             <button class="btn-warning" onclick="openPdfReportModal()">
                 📋 Laudo Técnico Oficial (PDF)
             </button>
@@ -867,9 +947,11 @@
             <div class="dropdown">
                 <button>Exportar Dados ▼</button>
                 <div class="dropdown-content">
+                    <a href="#" onclick="downloadDossierZip(); return false;">📦 Dossiê Pericial Completo (.ZIP)</a>
                     <a href="/api/export?table=pings" download="historico_pings.csv">Exportar Pings (CSV)</a>
                     <a href="/api/export?table=speed_tests" download="historico_velocidade.csv">Exportar Velocidades (CSV)</a>
                     <a href="/api/export?table=outages" download="historico_quedas.csv">Exportar Quedas (CSV)</a>
+                    <a href="/api/export?table=route_traces" download="historico_rotas.csv">Exportar Traceroutes (CSV)</a>
                 </div>
             </div>
 
@@ -932,11 +1014,14 @@
             <div class="kpi-subtitle" id="kpiDnsStatus">Resolução DNS: OK</div>
         </div>
 
-        <!-- Card 4: Velocidade -->
+        <!-- Card 4: Velocidade & Bufferbloat -->
         <div class="kpi-card purple" id="cardSpeed">
             <div class="kpi-label">Última Velocidade Medida</div>
             <div class="kpi-value" id="kpiDownload">-- <span>Mbps</span></div>
             <div class="kpi-subtitle" id="kpiUpload">Upload: -- Mbps</div>
+            <div class="kpi-subtitle" id="kpiBufferbloat" style="margin-top: 5px; font-weight: 500;">
+                Bufferbloat: <span id="kpiBufferbloatBadge" style="display:inline-block; padding: 2px 7px; border-radius: 4px; font-weight: 700; font-size: 0.8rem; background: rgba(34, 197, 94, 0.2); color: #22c55e;">A+</span> <span id="kpiBufferbloatDelta" style="font-size: 0.75rem; color: var(--text-muted);">(Δ +0ms)</span>
+            </div>
         </div>
 
         <!-- Card 5: Uptime -->
@@ -995,12 +1080,27 @@
             <div class="chart-header">
                 <div>
                     <span class="chart-title">Latência e Perda de Pacotes</span>
-                    <span style="font-size: 0.75rem; color: var(--text-muted); display: block;">Arraste para dar zoom na linha do tempo</span>
+                    <span style="font-size: 0.75rem; color: var(--text-muted); display: block;" id="latencySubtitle">Média Dinâmica: -- ms • Arraste para mover • Duplo clique para resetar</span>
                 </div>
-                <button class="btn-reset-zoom" onclick="resetLatencyZoom()">🔍 Resetar Zoom</button>
+                <div class="chart-actions-toolbar">
+                    <div class="chart-presets" id="latencyPresets">
+                        <button class="btn-chart-pill" onclick="setChartWindow('latencyChart', 120, this)" title="Visualizar última 1 hora">1h</button>
+                        <button class="btn-chart-pill" onclick="setChartWindow('latencyChart', 360, this)" title="Visualizar últimas 3 horas">3h</button>
+                        <button class="btn-chart-pill" onclick="setChartWindow('latencyChart', 720, this)" title="Visualizar últimas 6 horas">6h</button>
+                        <button class="btn-chart-pill" onclick="setChartWindow('latencyChart', 1440, this)" title="Visualizar últimas 12 horas">12h</button>
+                        <button class="btn-chart-pill active" onclick="resetLatencyZoom(this)" title="Visualizar todo o período">Tudo</button>
+                    </div>
+                    <div class="chart-controls">
+                        <button class="btn-chart-nav" onclick="panChart('latencyChart', 1)" title="Navegar para trás no tempo (passado)">◀ Anterior</button>
+                        <button class="btn-chart-nav" onclick="zoomChart('latencyChart', 1.25)" title="Aproximar (+)">🔍+</button>
+                        <button class="btn-chart-nav" onclick="zoomChart('latencyChart', 0.8)" title="Afastar (-)">🔍−</button>
+                        <button class="btn-chart-nav" onclick="resetLatencyZoom()" title="Resetar visualização">↺</button>
+                        <button class="btn-chart-nav" onclick="panChart('latencyChart', -1)" title="Navegar para frente no tempo (recente)">Próximo ▶</button>
+                    </div>
+                </div>
             </div>
             <div class="chart-canvas-container">
-                <canvas id="latencyChart"></canvas>
+                <canvas id="latencyChart" ondblclick="resetLatencyZoom()" title="Arraste para mover • Roda para zoom • Duplo clique para resetar"></canvas>
             </div>
         </div>
 
@@ -1008,12 +1108,27 @@
             <div class="chart-header">
                 <div>
                     <span class="chart-title">Velocidade de Download e Upload (Mbps)</span>
-                    <span style="font-size: 0.75rem; color: var(--text-muted); display: block;" id="contractedSubtitle">Contratado: 500M</span>
+                    <span style="font-size: 0.75rem; color: var(--text-muted); display: block;" id="contractedSubtitle">Contratado: 500M • Arraste para mover</span>
                 </div>
-                <button class="btn-reset-zoom" onclick="resetSpeedZoom()">🔍 Resetar Zoom</button>
+                <div class="chart-actions-toolbar">
+                    <div class="chart-presets" id="speedPresets">
+                        <button class="btn-chart-pill" onclick="setChartWindow('speedChart', 24, this)" title="Visualizar últimas 2 horas (~24 testes)">2h</button>
+                        <button class="btn-chart-pill" onclick="setChartWindow('speedChart', 72, this)" title="Visualizar últimas 6 horas (~72 testes)">6h</button>
+                        <button class="btn-chart-pill" onclick="setChartWindow('speedChart', 144, this)" title="Visualizar últimas 12 horas (~144 testes)">12h</button>
+                        <button class="btn-chart-pill" onclick="setChartWindow('speedChart', 288, this)" title="Visualizar últimas 24 horas (~288 testes)">24h</button>
+                        <button class="btn-chart-pill active" onclick="resetSpeedZoom(this)" title="Visualizar todo o período">Tudo</button>
+                    </div>
+                    <div class="chart-controls">
+                        <button class="btn-chart-nav" onclick="panChart('speedChart', 1)" title="Navegar para trás no tempo (passado)">◀ Anterior</button>
+                        <button class="btn-chart-nav" onclick="zoomChart('speedChart', 1.25)" title="Aproximar (+)">🔍+</button>
+                        <button class="btn-chart-nav" onclick="zoomChart('speedChart', 0.8)" title="Afastar (-)">🔍−</button>
+                        <button class="btn-chart-nav" onclick="resetSpeedZoom()" title="Resetar visualização">↺</button>
+                        <button class="btn-chart-nav" onclick="panChart('speedChart', -1)" title="Navegar para frente no tempo (recente)">Próximo ▶</button>
+                    </div>
+                </div>
             </div>
             <div class="chart-canvas-container">
-                <canvas id="speedChart"></canvas>
+                <canvas id="speedChart" ondblclick="resetSpeedZoom()" title="Arraste para mover • Roda para zoom • Duplo clique para resetar"></canvas>
             </div>
         </div>
     </div>
@@ -1048,6 +1163,25 @@
                     </tr>
                 </tbody>
             </table>
+        </div>
+
+        <!-- Barra de Paginação da Tabela -->
+        <div class="pagination-bar" id="outagesPaginationBar" style="display: flex; justify-content: space-between; align-items: center; margin-top: 15px; padding-top: 12px; border-top: 1px solid var(--border-color); flex-wrap: wrap; gap: 10px;">
+            <div style="font-size: 0.85rem; color: var(--text-secondary);" id="outagesPageInfo">
+                Carregando ocorrências...
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <label style="font-size: 0.8rem; color: var(--text-muted);">Por página:</label>
+                <select id="outagesPerPageSelect" onchange="changeOutagesPerPage(this.value)" class="input-datetime" style="padding: 3px 6px; width: auto; font-size: 0.8rem;">
+                    <option value="10" selected>10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="9999">Todas</option>
+                </select>
+                <button class="btn-chart-nav" id="btnOutagesPrev" onclick="goToOutagesPage(currentOutagesPage - 1)" style="border: 1px solid var(--border-color); padding: 4px 10px; font-weight: 600;">◀ Anterior</button>
+                <span id="outagesPageNumbers" style="font-size: 0.85rem; color: var(--text-primary); font-weight: 600; min-width: 45px; text-align: center;">1 / 1</span>
+                <button class="btn-chart-nav" id="btnOutagesNext" onclick="goToOutagesPage(currentOutagesPage + 1)" style="border: 1px solid var(--border-color); padding: 4px 10px; font-weight: 600;">Próxima ▶</button>
+            </div>
         </div>
     </div>
 
@@ -1094,45 +1228,53 @@
                     <div class="laudo-meta-item">Período Auditado: <strong id="laudoPeriod">--</strong></div>
                 </div>
 
-                <!-- Resumo Executivo -->
+                <!-- Seção 1: Resumo Executivo e Discriminação Absoluta -->
                 <div class="laudo-section">
-                    <div class="laudo-section-title">1. Resumo Executivo de Desempenho e Ressarcimento</div>
+                    <div class="laudo-section-title">1. Resumo Executivo e Discriminação Absoluta (ABNT NBR 13752)</div>
                     <div class="laudo-kpi-summary" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));">
                         <div class="laudo-kpi-box">
                             <div class="val" id="laudoUptime">--%</div>
-                            <div class="lbl">Disponibilidade</div>
+                            <div class="lbl">Disponibilidade SLA</div>
+                        </div>
+                        <div class="laudo-kpi-box" style="border-left: 3px solid #ef4444;">
+                            <div class="val" id="laudoTotalOutagesBox" style="color: #dc2626;">0</div>
+                            <div class="lbl">Quedas Totais (<span id="laudoTotalOutagesMin">0</span>m)</div>
+                        </div>
+                        <div class="laudo-kpi-box" style="border-left: 3px solid #f59e0b;">
+                            <div class="val" id="laudoPartialOutagesBox" style="color: #d97706;">0</div>
+                            <div class="lbl">Instabilidades (<span id="laudoPartialOutagesMin">0</span>m)</div>
                         </div>
                         <div class="laudo-kpi-box">
                             <div class="val" id="laudoDowntimeMin">-- min</div>
-                            <div class="lbl">Tempo Fora do Ar</div>
-                        </div>
-                        <div class="laudo-kpi-box">
-                            <div class="val" id="laudoOutagesCount">--</div>
-                            <div class="lbl">Interrupções</div>
+                            <div class="lbl">Tempo Total Afetado</div>
                         </div>
                         <div class="laudo-kpi-box">
                             <div class="val" id="laudoAvgDown">-- Mbps</div>
-                            <div class="lbl">Velocidade Média</div>
+                            <div class="lbl">Download Médio</div>
                         </div>
                         <div class="laudo-kpi-box" style="border: 1px solid #16a34a; background: rgba(34, 197, 94, 0.08);">
                             <div class="val" id="laudoRefund" style="color: #16a34a;">R$ 0,00</div>
-                            <div class="lbl">Abatimento Estimado</div>
+                            <div class="lbl">Abatimento Proporcional</div>
+                        </div>
+                        <div class="laudo-kpi-box" style="border: 1px solid #2563eb; background: rgba(37, 99, 235, 0.08);">
+                            <div class="val" id="laudoRegulatoryRefund" style="color: #2563eb;">R$ 0,00</div>
+                            <div class="lbl">Mínimo Anatel Art. 46</div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Tabela de Ocorrências e Quedas -->
+                <!-- Seção 2: Relação Detalhada de Interrupções e Instabilidades -->
                 <div class="laudo-section">
-                    <div class="laudo-section-title">2. Relação Detalhada de Interrupções e Instabilidades</div>
+                    <div class="laudo-section-title">2. Histórico Discriminado das Interrupções e Degradações</div>
                     <table class="laudo-table">
                         <thead>
                             <tr>
                                 <th>Início</th>
                                 <th>Término</th>
                                 <th>Duração</th>
-                                <th>Tipo</th>
-                                <th>Motivo Técnico Detectado</th>
-                                <th>Assinatura / RFC 3161</th>
+                                <th>Modalidade Pericial</th>
+                                <th>Diagnóstico Técnico</th>
+                                <th>Cadeia / RFC 3161</th>
                             </tr>
                         </thead>
                         <tbody id="laudoOutagesBody">
@@ -1143,14 +1285,28 @@
                     </table>
                 </div>
 
-                <!-- Base Legal -->
+                <!-- Seção 3: Fundamentação Legal e Discriminação de Abatimento -->
                 <div class="laudo-section">
-                    <div class="laudo-section-title">3. Fundamentação Legal e Solicitação de Ressarcimento</div>
+                    <div class="laudo-section-title">3. Fundamentação Legal e Demonstrativo Financeiro</div>
                     <div class="laudo-legal">
-                        <strong>• Resolução nº 632/2014 da ANATEL (Arts. 46 a 49):</strong> O usuário tem direito ao abatimento proporcional do valor da assinatura por interrupção dos serviços, na base de 1/30 (um trinta avos) do valor mensal da fatura a cada período de 24 horas ou fração igual ou superior a 30 minutos.<br>
-                        <strong>• Abatimento Calculado:</strong> <span id="laudoLegalRefund" style="font-weight: 700; color: #15803d;">R$ 0,00</span> (com base na fatura informada de <span id="laudoMonthlyFee">R$ 0,00</span>).<br>
-                        <strong>• Resolução nº 717/2019 da ANATEL (RQUAL):</strong> Exige entrega de no mínimo 80% da velocidade média mensal contratada e disponibilidade contínua sem degradação severa de latência.<br>
-                        <strong>• Código de Defesa do Consumidor (Lei 8.078/1990, Arts. 6º, X e 22):</strong> O fornecimento de internet é serviço essencial de prestação contínua. As interrupções configuram vício de prestação, ensejando abatimento automático e reparação por perdas e danos.
+                        <strong>• Resolução nº 632/2014 da ANATEL (Arts. 46 a 49):</strong> O consumidor tem direito ao abatimento automático proporcional na fatura em decorrência da indisponibilidade do serviço. Pelo § 1º do Art. 46, a fração de interrupção igual ou superior a 30 minutos confere o desconto equivalente a no mínimo 1 (um) dia de assinatura (1/30).<br>
+                        <strong>• Demonstrativo de Abatimento:</strong>
+                        <ul style="margin: 4px 0 6px 18px; padding: 0;">
+                            <li>Abatimento por Quedas Totais (Blackouts): <strong id="laudoRefundTotalOnly" style="color: #dc2626;">R$ 0,00</strong></li>
+                            <li>Abatimento por Instabilidades Severas (CDC Art. 20): <strong id="laudoRefundPartialOnly" style="color: #d97706;">R$ 0,00</strong></li>
+                            <li>Abatimento Proporcional Contínuo Consolidado: <span id="laudoLegalRefund" style="font-weight: 700; color: #15803d;">R$ 0,00</span> (sobre a mensalidade de <span id="laudoMonthlyFee">R$ 0,00</span>).</li>
+                            <li>Abatimento Mínimo Regulatório ANATEL (Art. 46, § 1º): <strong id="laudoLegalRegulatoryRefund" style="color: #2563eb;">R$ 0,00</strong> (devidos <span id="laudoRegulatoryDays">0</span> dia(s) faturáveis de desconto).</li>
+                        </ul>
+                        <strong>• Resoluções nº 574/2011 e 717/2019 da ANATEL (RQUAL):</strong> Exigem entrega mensal de no mínimo 80% da velocidade média e 40% de velocidade instantânea. Status de conformidade de velocidade: <span id="laudoSpeedStatusBadge" style="font-weight: 700;">--</span>.<br>
+                        <strong>• Código de Defesa do Consumidor (Lei 8.078/1990, Arts. 6º, X, 20 e 22):</strong> O fornecimento de internet banda larga é serviço essencial de prestação contínua. As interrupções e degradações severas configuram vício de prestação, ensejando abatimento automático e reparação integral por danos materiais e morais.
+                    </div>
+                </div>
+
+                <!-- Seção 4: Parecer Técnico Conclusivo -->
+                <div class="laudo-section">
+                    <div class="laudo-section-title">4. Parecer Técnico Conclusivo Pericial</div>
+                    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px; font-size: 0.8rem; color: #1e293b;">
+                        Atesta-se por meio deste documento pericial, amparado em telemetria cronometrada sob cadeia de custódia ABNT NBR ISO/IEC 27037, que a prestadora incorreu em descumprimento contínuo das metas contratuais e regulatórias vigentes, fazendo jus o consumidor ao abatimento imediato na fatura e à adoção das medidas administrativas cabíveis perante a ANATEL, PROCON e Juizado Especial Cível.
                     </div>
                 </div>
 
@@ -1217,6 +1373,45 @@
                 <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Testemunha Externa (Healthchecks.io / Uptime Kuma):</label>
                 <input type="url" id="cfgHeartbeat" placeholder="https://hc-ping.com/seu-uuid" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
                 <span style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Envia ping a cada ciclo online para auditoria redundante externa.</span>
+            </div>
+
+            <!-- Notificações em Tempo Real (Discord & Telegram) -->
+            <div style="margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-color);">
+                <div style="font-weight: 600; font-size: 0.9rem; color: var(--accent-blue); margin-bottom: 10px;">
+                    🔔 Notificações e Webhooks em Tempo Real
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Discord Webhook URL:</label>
+                    <input type="url" id="cfgDiscordWebhook" placeholder="https://discord.com/api/webhooks/..." style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+                </div>
+                <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                    <div style="flex: 1;">
+                        <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Telegram Bot Token:</label>
+                        <input type="text" id="cfgTelegramToken" placeholder="123456:ABC-DEF..." style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+                    </div>
+                    <div style="flex: 1;">
+                        <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Telegram Chat ID:</label>
+                        <input type="text" id="cfgTelegramChatId" placeholder="-100123456789" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                    <div style="flex: 1;">
+                        <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Alertar Quedas e Retorno:</label>
+                        <select id="cfgNotificationsEnabled" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+                            <option value="1">Ativado (Alertar quedas e término)</option>
+                            <option value="0">Desativado</option>
+                        </select>
+                    </div>
+                    <div style="flex: 1;">
+                        <label style="display:block; font-size: 0.85rem; margin-bottom: 4px; color: var(--text-secondary);">Alerta de Velocidade (< % contratada):</label>
+                        <input type="number" id="cfgSpeedThreshold" value="40" min="10" max="80" style="width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border-color); color: white; border-radius: 6px;">
+                    </div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; margin-bottom: 6px;">
+                    <button type="button" id="btnTestWebhooks" onclick="testWebhooks()" style="background: rgba(56, 189, 248, 0.15); border: 1px solid var(--accent-blue); color: var(--accent-blue); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem;">
+                        🔔 Testar Envio de Notificação
+                    </button>
+                </div>
             </div>
         </div>
         <div class="modal-footer">
@@ -1321,20 +1516,93 @@
         }, duration);
     }
 
-    function fallbackCopy(text) {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        try {
-            document.execCommand('copy');
-            showToast("📋 Evidência copiada com sucesso!");
-        } catch (e) {
-            showToast("Não foi possível copiar automaticamente.", "error");
+    function copyEvidenceText(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast("📋 Evidência pericial copiada com sucesso!");
+            }).catch(() => {
+                fallbackCopy(text);
+            });
+        } else {
+            fallbackCopy(text);
         }
-        document.body.removeChild(ta);
+    }
+
+    function fallbackCopy(text) {
+        let success = false;
+        try {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.left = "-9999px";
+            ta.style.top = "-9999px";
+            ta.setAttribute("readonly", "");
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            ta.setSelectionRange(0, 99999);
+            success = document.execCommand('copy');
+            document.body.removeChild(ta);
+        } catch (e) {
+            success = false;
+        }
+
+        if (success) {
+            showToast("📋 Evidência copiada com sucesso!");
+        } else {
+            showEvidenceFallbackModal(text);
+        }
+    }
+
+    function showEvidenceFallbackModal(text) {
+        let modal = document.getElementById('evidenceFallbackModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'evidenceFallbackModal';
+            modal.className = 'modal-backdrop';
+            modal.style.display = 'flex';
+            modal.innerHTML = `
+                <div class="modal-card" style="max-width: 600px;">
+                    <div class="modal-header">
+                        <span class="modal-title">📋 Evidência Pericial</span>
+                        <button class="btn-close-modal" onclick="document.getElementById('evidenceFallbackModal').style.display='none'">&times;</button>
+                    </div>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">
+                        O texto pericial está selecionado abaixo. Pressione <strong>Ctrl+C</strong> (ou toque e segure no celular) para copiar:
+                    </p>
+                    <textarea id="evidenceFallbackText" rows="10" style="width: 100%; background: #0f172a; color: #f8fafc; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 0.85rem; margin-bottom: 15px; box-sizing: border-box; resize: vertical;"></textarea>
+                    <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                        <button class="btn-primary" onclick="copyFallbackTextarea()">Copiar Novamente</button>
+                        <button onclick="document.getElementById('evidenceFallbackModal').style.display='none'">Fechar</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+        const ta = document.getElementById('evidenceFallbackText');
+        ta.value = text;
+        modal.style.display = 'flex';
+        ta.focus();
+        ta.select();
+    }
+
+    function copyFallbackTextarea() {
+        const ta = document.getElementById('evidenceFallbackText');
+        if (ta) {
+            ta.focus();
+            ta.select();
+            ta.setSelectionRange(0, 99999);
+            try {
+                const ok = document.execCommand('copy');
+                if (ok) {
+                    showToast("📋 Evidência copiada com sucesso!");
+                } else {
+                    showToast("Pressione Ctrl+C para copiar o texto selecionado.", "warning");
+                }
+            } catch (e) {
+                showToast("Pressione Ctrl+C para copiar o texto selecionado.", "warning");
+            }
+        }
     }
 
     function toggleIpVisibility() {
@@ -1464,7 +1732,7 @@
             document.getElementById('kpiLastCheck').innerText = `Aguardando medição...`;
         }
 
-        // Velocidades
+        // Velocidades & Bufferbloat
         if (data.last_speed) {
             document.getElementById('kpiDownload').innerHTML = `${data.last_speed.download_mbps || '--'} <span>Mbps</span>`;
             let upText = `Upload: ${data.last_speed.upload_mbps || '--'} Mbps`;
@@ -1472,6 +1740,31 @@
                 upText += ` (Média 24h: ${data.stats_24h.avg_download_mbps}M Down / ${data.stats_24h.avg_upload_mbps}M Up)`;
             }
             document.getElementById('kpiUpload').innerText = upText;
+
+            const bbGrade = data.last_speed.bufferbloat_grade || (data.stats_24h ? data.stats_24h.latest_bufferbloat_grade : "A+");
+            const bbDelta = data.last_speed.bufferbloat_delta_ms !== undefined && data.last_speed.bufferbloat_delta_ms !== null 
+                ? data.last_speed.bufferbloat_delta_ms 
+                : (data.stats_24h && data.stats_24h.latest_bufferbloat_delta_ms !== undefined ? data.stats_24h.latest_bufferbloat_delta_ms : 0);
+            
+            const badgeEl = document.getElementById('kpiBufferbloatBadge');
+            if (badgeEl) {
+                badgeEl.innerText = bbGrade;
+                const colors = {
+                    'A+': { bg: 'rgba(34, 197, 94, 0.2)', fg: '#22c55e' },
+                    'A': { bg: 'rgba(34, 197, 94, 0.2)', fg: '#22c55e' },
+                    'B': { bg: 'rgba(56, 189, 248, 0.2)', fg: '#38bdf8' },
+                    'C': { bg: 'rgba(245, 158, 11, 0.2)', fg: '#f59e0b' },
+                    'D': { bg: 'rgba(249, 115, 22, 0.2)', fg: '#f97316' },
+                    'F': { bg: 'rgba(239, 68, 68, 0.2)', fg: '#ef4444' }
+                };
+                const c = colors[bbGrade] || colors['A+'];
+                badgeEl.style.background = c.bg;
+                badgeEl.style.color = c.fg;
+            }
+            const deltaEl = document.getElementById('kpiBufferbloatDelta');
+            if (deltaEl) {
+                deltaEl.innerText = `(Δ +${bbDelta !== null && bbDelta !== undefined ? bbDelta : 0}ms)`;
+            }
         } else {
             document.getElementById('kpiDownload').innerHTML = `-- <span>Mbps</span>`;
             document.getElementById('kpiUpload').innerText = `Upload: -- Mbps`;
@@ -1481,9 +1774,15 @@
         if (data.stats_24h) {
             const uptime = data.stats_24h.uptime_pct !== null && data.stats_24h.uptime_pct !== undefined ? data.stats_24h.uptime_pct : 100.0;
             document.getElementById('kpiUptime').innerHTML = `${uptime.toFixed(1)} <span>%</span>`;
+            
             const downSec = data.stats_24h.total_downtime_seconds || 0;
             const downMin = Math.round(downSec / 60);
-            document.getElementById('kpiDowntimeTotal').innerText = `Tempo total fora: ${downMin} min (${Math.round(downSec)}s)`;
+            const totSec = data.stats_24h.total_outages_seconds || 0;
+            const partSec = data.stats_24h.partial_outages_seconds || 0;
+            const totMin = Math.round(totSec / 60);
+            const partMin = Math.round(partSec / 60);
+
+            document.getElementById('kpiDowntimeTotal').innerText = `Afetado: ${downMin}m (${totMin}m quedas + ${partMin}m instável)`;
 
             let latText = `Média 24h: ${data.stats_24h.avg_latency_ms !== null ? data.stats_24h.avg_latency_ms + ' ms' : '--'}`;
             if (data.stats_24h.avg_jitter_ms !== null && data.stats_24h.avg_jitter_ms !== undefined) {
@@ -1495,7 +1794,12 @@
             const totOutages = data.stats_24h.total_outages || 0;
             const partOutages = data.stats_24h.partial_outages || 0;
             document.getElementById('kpiTotalOutages').innerHTML = `${totOutages} <span>quedas</span>`;
+            const cardTotSub = document.querySelector('#cardTotalOutages .kpi-subtitle');
+            if (cardTotSub) cardTotSub.innerText = `${totMin} min sem sinal • Res. 632 Anatel`;
+
             document.getElementById('kpiPartialOutages').innerHTML = `${partOutages} <span>eventos</span>`;
+            const cardPartSub = document.querySelector('#cardPartialOutages .kpi-subtitle');
+            if (cardPartSub) cardPartSub.innerText = `${partMin} min degradado • CDC Art. 20`;
         }
     }
 
@@ -1562,24 +1866,207 @@
         }
     }
 
-    function resetLatencyZoom() {
-        if (latencyChartInstance) latencyChartInstance.resetZoom();
+    function computeMovingAverage(data, windowSize = 9) {
+        const result = [];
+        const half = Math.floor(windowSize / 2);
+        for (let i = 0; i < data.length; i++) {
+            let sum = 0;
+            let count = 0;
+            const start = Math.max(0, i - half);
+            const end = Math.min(data.length - 1, i + half);
+            for (let j = start; j <= end; j++) {
+                const val = data[j];
+                if (val !== null && val !== undefined && !isNaN(val)) {
+                    sum += val;
+                    count++;
+                }
+            }
+            result.push(count > 0 ? Number((sum / count).toFixed(1)) : null);
+        }
+        return result;
     }
 
-    function resetSpeedZoom() {
-        if (speedChartInstance) speedChartInstance.resetZoom();
+    function updateVisibleAverage(chart) {
+        if (!chart || !chart.scales || !chart.scales.x) return;
+        const xMin = chart.scales.x.min;
+        const xMax = chart.scales.x.max;
+        const totalLabels = (chart.data.labels || []).length;
+        if (totalLabels === 0) return;
+
+        const minIndex = Math.max(0, Math.floor(xMin !== undefined ? xMin : 0));
+        const maxIndex = Math.min(totalLabels - 1, Math.ceil(xMax !== undefined ? xMax : totalLabels - 1));
+
+        const latDataset = (chart.data.datasets || []).find(d => d.label && d.label.includes('Latência')) || chart.data.datasets[1] || chart.data.datasets[0];
+        if (!latDataset || !latDataset.data) return;
+
+        const visibleLats = [];
+        for (let i = minIndex; i <= maxIndex; i++) {
+            const v = latDataset.data[i];
+            if (v !== null && v !== undefined && !isNaN(v)) {
+                visibleLats.push(v);
+            }
+        }
+
+        if (visibleLats.length > 0) {
+            const avg = visibleLats.reduce((a, b) => a + b, 0) / visibleLats.length;
+            const avgRound = Number(avg.toFixed(1));
+
+            const subEl = document.getElementById('latencySubtitle');
+            if (subEl) {
+                subEl.innerText = `Média do Período Visível: ${avgRound} ms • Linha Âmbar: Média Móvel • Duplo clique: resetar`;
+            }
+        }
+    }
+
+    function clearPresetActive(chartId) {
+        const containerId = chartId === 'latencyChart' ? 'latencyPresets' : 'speedPresets';
+        const container = document.getElementById(containerId);
+        if (container) {
+            container.querySelectorAll('.btn-chart-pill').forEach(b => b.classList.remove('active'));
+        }
+    }
+
+    function setChartWindow(chartId, pointsCount, btnEl) {
+        const inst = chartId === 'latencyChart' ? latencyChartInstance : speedChartInstance;
+        if (!inst || !inst.data || !inst.data.labels || inst.data.labels.length === 0) return;
+        const total = inst.data.labels.length;
+        const maxIdx = total - 1;
+        const minIdx = Math.max(0, maxIdx - pointsCount + 1);
+        inst.zoomScale('x', { min: minIdx, max: maxIdx }, 'default');
+        if (chartId === 'latencyChart') {
+            updateVisibleAverage(inst);
+        }
+        if (btnEl && btnEl.parentElement) {
+            btnEl.parentElement.querySelectorAll('.btn-chart-pill').forEach(b => b.classList.remove('active'));
+            btnEl.classList.add('active');
+        }
+    }
+
+    function panChart(chartId, directionOrAmount) {
+        const inst = chartId === 'latencyChart' ? latencyChartInstance : speedChartInstance;
+        if (inst) {
+            let shiftPixels;
+            if (directionOrAmount === 1 || directionOrAmount === -1) {
+                shiftPixels = Math.round((inst.width || 600) * 0.35) * directionOrAmount;
+            } else {
+                shiftPixels = directionOrAmount;
+            }
+            inst.pan({ x: shiftPixels }, undefined, 'default');
+            if (chartId === 'latencyChart') {
+                updateVisibleAverage(inst);
+            }
+            clearPresetActive(chartId);
+        }
+    }
+
+    function zoomChart(chartId, factor) {
+        const inst = chartId === 'latencyChart' ? latencyChartInstance : speedChartInstance;
+        if (inst) {
+            inst.zoom(factor, 'default');
+            if (chartId === 'latencyChart') {
+                updateVisibleAverage(inst);
+            }
+            clearPresetActive(chartId);
+        }
+    }
+
+    function resetLatencyZoom(btnEl) {
+        if (latencyChartInstance) {
+            latencyChartInstance.resetZoom();
+            updateVisibleAverage(latencyChartInstance);
+        }
+        const container = document.getElementById('latencyPresets');
+        if (container) {
+            container.querySelectorAll('.btn-chart-pill').forEach(b => b.classList.remove('active'));
+            if (btnEl && btnEl.classList) {
+                btnEl.classList.add('active');
+            } else {
+                const allBtn = container.querySelector('.btn-chart-pill:last-child');
+                if (allBtn) allBtn.classList.add('active');
+            }
+        }
+    }
+
+    function resetSpeedZoom(btnEl) {
+        if (speedChartInstance) {
+            speedChartInstance.resetZoom();
+        }
+        const container = document.getElementById('speedPresets');
+        if (container) {
+            container.querySelectorAll('.btn-chart-pill').forEach(b => b.classList.remove('active'));
+            if (btnEl && btnEl.classList) {
+                btnEl.classList.add('active');
+            } else {
+                const allBtn = container.querySelector('.btn-chart-pill:last-child');
+                if (allBtn) allBtn.classList.add('active');
+            }
+        }
+    }
+
+    function smoothLatencyData(data) {
+        if (!data || data.length < 5) return data;
+        const res = [];
+        for (let i = 0; i < data.length; i++) {
+            const curr = data[i];
+            if (curr === null || curr === undefined || isNaN(curr)) {
+                res.push(null);
+                continue;
+            }
+            if (curr > 35) {
+                res.push(curr);
+                continue;
+            }
+            const prev = (i > 0 && data[i - 1] !== null && data[i - 1] !== undefined) ? data[i - 1] : curr;
+            const next = (i < data.length - 1 && data[i + 1] !== null && data[i + 1] !== undefined) ? data[i + 1] : curr;
+            res.push(Number((0.2 * prev + 0.6 * curr + 0.2 * next).toFixed(1)));
+        }
+        return res;
     }
 
     function renderLatencyChart(pings) {
-        const ctx = document.getElementById('latencyChart').getContext('2d');
+        if (typeof Chart === 'undefined') return;
+        const canvas = document.getElementById('latencyChart');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
         const labels = pings.map(p => formatShortTime(p.timestamp));
-        const latencies = pings.map(p => p.latency_ms);
+        const fullTimestamps = pings.map(p => formatDateTime(p.timestamp));
+        const rawLatencies = pings.map(p => p.latency_ms);
         const losses = pings.map(p => p.packet_loss_pct);
 
+        // Suavização balanceada dos pings normais para eliminar o ruído visual de dente de serra
+        const displayLatencies = smoothLatencyData(rawLatencies);
+
+        // Média Dinâmica Móvel suave com janela adaptativa ao volume de dados
+        const windowSize = rawLatencies.length > 400 ? 25 : (rawLatencies.length > 150 ? 17 : 9);
+        const movingAvgLine = computeMovingAverage(rawLatencies, windowSize);
+
+        // Faixas de fundo translúcidas para perdas e quedas (estilo Grafana/Datadog)
+        const actualLosses = losses;
+        const shadeValues = losses.map(l => (l > 0 ? 100 : 0));
+        const shadeColors = losses.map(l => {
+            if (l >= 100) return 'rgba(239, 68, 68, 0.35)'; // Vermelho translúcido para queda total
+            if (l >= 50) return 'rgba(239, 68, 68, 0.22)';  // Vermelho moderado para perda severa
+            if (l > 0) return 'rgba(245, 158, 11, 0.22)';   // Âmbar para instabilidade/perda parcial
+            return 'transparent';
+        });
+
+        // Média geral do período
+        const validLats = rawLatencies.filter(v => v !== null && v !== undefined && !isNaN(v));
+        const avgVal = validLats.length > 0 ? (validLats.reduce((a, b) => a + b, 0) / validLats.length) : null;
+
+        const subEl = document.getElementById('latencySubtitle');
+        if (subEl && avgVal !== null) {
+            subEl.innerText = `Média do Período: ${avgVal.toFixed(1)} ms • Linha Âmbar: Média Dinâmica Móvel`;
+        }
+
         if (latencyChartInstance) {
+            latencyChartInstance._actualLosses = actualLosses;
             latencyChartInstance.data.labels = labels;
-            latencyChartInstance.data.datasets[0].data = latencies;
-            latencyChartInstance.data.datasets[1].data = losses;
+            latencyChartInstance.data.fullTimestamps = fullTimestamps;
+            latencyChartInstance.data.datasets[0].data = movingAvgLine;
+            latencyChartInstance.data.datasets[1].data = displayLatencies;
+            latencyChartInstance.data.datasets[2].data = shadeValues;
+            latencyChartInstance.data.datasets[2].backgroundColor = shadeColors;
             latencyChartInstance.update('none');
             return;
         }
@@ -1588,29 +2075,44 @@
             type: 'line',
             data: {
                 labels: labels,
+                fullTimestamps: fullTimestamps,
                 datasets: [
                     {
                         type: 'line',
-                        label: 'Latência (ms)',
-                        data: latencies,
-                        borderColor: '#38bdf8',
-                        backgroundColor: 'rgba(56, 189, 248, 0.08)',
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.25,
+                        label: 'Média Dinâmica (Móvel)',
+                        data: movingAvgLine,
+                        borderColor: '#f59e0b',
+                        borderWidth: 2.5,
+                        tension: 0.4,
                         pointRadius: 0,
-                        pointHoverRadius: 5,
+                        pointHoverRadius: 6,
+                        fill: false,
+                        order: 1,
+                        yAxisID: 'y'
+                    },
+                    {
+                        type: 'line',
+                        label: 'Latência (ms)',
+                        data: displayLatencies,
+                        borderColor: 'rgba(56, 189, 248, 0.75)',
+                        backgroundColor: 'rgba(56, 189, 248, 0.05)',
+                        borderWidth: 1.5,
+                        fill: true,
+                        tension: 0.35,
+                        pointRadius: 0,
+                        pointHoverRadius: 6,
+                        order: 2,
                         yAxisID: 'y'
                     },
                     {
                         type: 'bar',
-                        label: 'Perda de Pacotes (%)',
-                        data: losses,
-                        backgroundColor: 'rgba(239, 68, 68, 0.75)',
-                        borderColor: '#ef4444',
-                        borderWidth: 1,
-                        borderRadius: 2,
-                        barPercentage: 0.5,
+                        label: 'Alerta de Perda / Instabilidade',
+                        data: shadeValues,
+                        backgroundColor: shadeColors,
+                        borderWidth: 0,
+                        categoryPercentage: 1.0,
+                        barPercentage: 1.0,
+                        order: 10,
                         yAxisID: 'y1'
                     }
                 ]
@@ -1634,45 +2136,99 @@
                     },
                     y1: {
                         type: 'linear',
-                        display: true,
-                        position: 'right',
+                        display: false,
                         min: 0,
                         max: 100,
-                        grid: { drawOnChartArea: false },
-                        ticks: { color: '#ef4444', stepSize: 25 },
-                        title: { display: true, text: 'Perda (%)', color: '#ef4444' }
+                        grid: { drawOnChartArea: false }
                     }
                 },
                 plugins: {
-                    legend: { labels: { color: '#f8fafc' } },
+                    legend: {
+                        labels: {
+                            color: '#f8fafc',
+                            generateLabels: function(chart) {
+                                const original = Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                                original.forEach(item => {
+                                    if (item.text && (item.text.includes('Alerta') || item.text.includes('Instabilidade') || item.text.includes('Perda'))) {
+                                        item.fillStyle = 'rgba(239, 68, 68, 0.6)';
+                                        item.strokeStyle = '#ef4444';
+                                    }
+                                });
+                                return original;
+                            }
+                        }
+                    },
                     tooltip: {
                         backgroundColor: '#0f172a',
                         borderColor: '#334155',
                         borderWidth: 1,
-                        padding: 10
+                        padding: 10,
+                        callbacks: {
+                            title: function(items) {
+                                if (!items || !items.length) return '';
+                                const idx = items[0].dataIndex;
+                                return (latencyChartInstance && latencyChartInstance.data.fullTimestamps)
+                                    ? latencyChartInstance.data.fullTimestamps[idx]
+                                    : items[0].label;
+                            },
+                            label: function(context) {
+                                const dsLabel = context.dataset.label || '';
+                                const idx = context.dataIndex;
+                                if (dsLabel.includes('Alerta') || dsLabel.includes('Instabilidade') || dsLabel.includes('Perda')) {
+                                    const realLoss = (latencyChartInstance && latencyChartInstance._actualLosses)
+                                        ? latencyChartInstance._actualLosses[idx]
+                                        : null;
+                                    if (realLoss === null || realLoss === undefined || realLoss === 0) {
+                                        return null;
+                                    }
+                                    if (realLoss >= 100) {
+                                        return ' 🔴 Queda Total (100% de perda)';
+                                    }
+                                    return ` ⚠️ Instabilidade: ${realLoss}% de perda`;
+                                }
+                                if (context.parsed && context.parsed.y !== null && context.parsed.y !== undefined) {
+                                    return ` ${dsLabel}: ${context.parsed.y} ms`;
+                                }
+                                return null;
+                            }
+                        }
                     },
                     zoom: {
-                        pan: { enabled: true, mode: 'x' },
+                        limits: {
+                            x: {
+                                min: 'original',
+                                max: 'original',
+                                minRange: 10
+                            }
+                        },
+                        pan: {
+                            enabled: true,
+                            mode: 'x',
+                            threshold: 2,
+                            onPan: function({ chart }) { updateVisibleAverage(chart); },
+                            onPanComplete: function({ chart }) { updateVisibleAverage(chart); clearPresetActive('latencyChart'); }
+                        },
                         zoom: {
-                            wheel: { enabled: true },
+                            wheel: { enabled: true, speed: 0.05 },
                             pinch: { enabled: true },
-                            drag: {
-                                enabled: true,
-                                backgroundColor: 'rgba(56, 189, 248, 0.2)',
-                                borderColor: '#38bdf8',
-                                borderWidth: 1
-                            },
-                            mode: 'x'
+                            mode: 'x',
+                            onZoom: function({ chart }) { updateVisibleAverage(chart); },
+                            onZoomComplete: function({ chart }) { updateVisibleAverage(chart); clearPresetActive('latencyChart'); }
                         }
                     }
                 }
             }
         });
+        latencyChartInstance._actualLosses = actualLosses;
     }
 
     function renderSpeedChart(speeds) {
-        const ctx = document.getElementById('speedChart').getContext('2d');
+        if (typeof Chart === 'undefined') return;
+        const canvas = document.getElementById('speedChart');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
         const labels = speeds.map(s => formatShortTime(s.timestamp));
+        const fullTimestamps = speeds.map(s => formatDateTime(s.timestamp));
         const downloads = speeds.map(s => s.download_mbps);
         const uploads = speeds.map(s => s.upload_mbps);
         const contracted = parseFloat(currentConfig.contracted_download_mbps) || 500;
@@ -1680,6 +2236,7 @@
 
         if (speedChartInstance) {
             speedChartInstance.data.labels = labels;
+            speedChartInstance.data.fullTimestamps = fullTimestamps;
             speedChartInstance.data.datasets[0].data = downloads;
             speedChartInstance.data.datasets[1].data = uploads;
             speedChartInstance.data.datasets[2].data = contractedLine;
@@ -1691,6 +2248,7 @@
             type: 'line',
             data: {
                 labels: labels,
+                fullTimestamps: fullTimestamps,
                 datasets: [
                     {
                         label: 'Download (Mbps)',
@@ -1743,18 +2301,40 @@
                 },
                 plugins: {
                     legend: { labels: { color: '#f8fafc' } },
+                    tooltip: {
+                        backgroundColor: '#0f172a',
+                        borderColor: '#334155',
+                        borderWidth: 1,
+                        padding: 10,
+                        callbacks: {
+                            title: function(items) {
+                                if (!items || !items.length) return '';
+                                const idx = items[0].dataIndex;
+                                return (speedChartInstance && speedChartInstance.data.fullTimestamps)
+                                    ? speedChartInstance.data.fullTimestamps[idx]
+                                    : items[0].label;
+                            }
+                        }
+                    },
                     zoom: {
-                        pan: { enabled: true, mode: 'x' },
+                        limits: {
+                            x: {
+                                min: 'original',
+                                max: 'original',
+                                minRange: 5
+                            }
+                        },
+                        pan: {
+                            enabled: true,
+                            mode: 'x',
+                            threshold: 2,
+                            onPanComplete: function({ chart }) { clearPresetActive('speedChart'); }
+                        },
                         zoom: {
-                            wheel: { enabled: true },
+                            wheel: { enabled: true, speed: 0.05 },
                             pinch: { enabled: true },
-                            drag: {
-                                enabled: true,
-                                backgroundColor: 'rgba(34, 197, 94, 0.2)',
-                                borderColor: '#22c55e',
-                                borderWidth: 1
-                            },
-                            mode: 'x'
+                            mode: 'x',
+                            onZoomComplete: function({ chart }) { clearPresetActive('speedChart'); }
                         }
                     }
                 }
@@ -1762,102 +2342,169 @@
         });
     }
 
-    // Tabela de Quedas com suporte a Quedas em Tempo Real e Quedas Parciais
+    // Tabela de Quedas com Paginação Interativa e Suporte a Quedas Parciais
+    let allFetchedOutages = [];
+    let currentOutagesPage = 1;
+    let outagesPerPage = 10;
+    let _outagesCache = {};
+
+    function changeOutagesPerPage(val) {
+        outagesPerPage = parseInt(val) || 10;
+        currentOutagesPage = 1;
+        renderOutagesPage();
+    }
+
+    function goToOutagesPage(page) {
+        const total = allFetchedOutages.length;
+        const totalPages = Math.ceil(total / outagesPerPage) || 1;
+        if (page < 1) page = 1;
+        if (page > totalPages) page = totalPages;
+        currentOutagesPage = page;
+        renderOutagesPage();
+    }
+
+    function renderOutagesPage() {
+        const tbody = document.getElementById('outagesTableBody');
+        const pageInfo = document.getElementById('outagesPageInfo');
+        const pageNumbers = document.getElementById('outagesPageNumbers');
+        const btnPrev = document.getElementById('btnOutagesPrev');
+        const btnNext = document.getElementById('btnOutagesNext');
+
+        if (!allFetchedOutages || allFetchedOutages.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--accent-green); padding: 25px;">🎉 Nenhuma queda ou instabilidade registrada no período! Conexão 100% estável.</td></tr>`;
+            if (pageInfo) pageInfo.innerText = "Nenhuma ocorrência encontrada";
+            if (pageNumbers) pageNumbers.innerText = "0 / 0";
+            if (btnPrev) btnPrev.disabled = true;
+            if (btnNext) btnNext.disabled = true;
+            return;
+        }
+
+        const total = allFetchedOutages.length;
+        const totalPages = Math.ceil(total / outagesPerPage) || 1;
+        if (currentOutagesPage > totalPages) currentOutagesPage = totalPages;
+        if (currentOutagesPage < 1) currentOutagesPage = 1;
+
+        const startIdx = (currentOutagesPage - 1) * outagesPerPage;
+        const endIdx = Math.min(startIdx + outagesPerPage, total);
+        const pageItems = allFetchedOutages.slice(startIdx, endIdx);
+
+        if (pageInfo) pageInfo.innerText = `Exibindo ${startIdx + 1}–${endIdx} de ${total} ocorrências`;
+        if (pageNumbers) pageNumbers.innerText = `${currentOutagesPage} / ${totalPages}`;
+        if (btnPrev) btnPrev.disabled = (currentOutagesPage <= 1);
+        if (btnNext) btnNext.disabled = (currentOutagesPage >= totalPages);
+
+        tbody.innerHTML = pageItems.map(o => {
+            const isOpen = o.status === 'OPEN';
+            const isTotal = (o.outage_type || 'TOTAL') === 'TOTAL';
+
+            let statusBadge = '';
+            if (isOpen) {
+                statusBadge = `<span class="badge badge-open">🔴 EM ANDAMENTO</span>`;
+            } else {
+                statusBadge = `<span class="badge badge-closed">CONCLUÍDA</span>`;
+            }
+
+            const typeBadge = isTotal
+                ? `<span class="badge badge-total">QUEDA TOTAL</span>`
+                : `<span class="badge badge-partial">PARCIAL / INSTÁVEL</span>`;
+
+            let certBadge = '';
+            if (o.tsa_authority) {
+                certBadge = ` <span style="background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid rgba(56, 189, 248, 0.4); font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 4px;" title="Carimbado por autoridade pública RFC 3161">🏛️ ${o.tsa_authority}</span>`;
+            }
+
+            const startStr = formatDateTime(o.start_time);
+            const endStr = o.end_time 
+                ? formatDateTime(o.end_time) 
+                : '<span style="color:var(--accent-red); font-weight:700;">AGORA (Ao Vivo)</span>';
+
+            let durStr = '--';
+            if (isOpen) {
+                const elapsed = Math.floor((Date.now() - new Date(o.start_time).getTime()) / 1000);
+                const m = Math.floor(elapsed / 60);
+                const s = elapsed % 60;
+                durStr = `<span id="liveOutageTimerCell" style="color: var(--accent-red); font-weight: 700;">${m}m ${s}s</span>`;
+            } else if (o.duration_seconds !== null && o.duration_seconds !== undefined) {
+                const sec = Math.round(o.duration_seconds);
+                durStr = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
+            }
+
+            return `
+                <tr style="${isOpen ? 'background: rgba(239, 68, 68, 0.08);' : ''}">
+                    <td>${statusBadge}${certBadge}</td>
+                    <td>${typeBadge}</td>
+                    <td><strong>${startStr}</strong></td>
+                    <td>${endStr}</td>
+                    <td><strong>${durStr}</strong></td>
+                    <td style="color: var(--text-secondary); max-width: 280px;">${o.reason || 'Interrupção detectada'}</td>
+                    <td>
+                        <button class="btn-copy-evid" onclick="copyOutageById(${o.id})">📋 Copiar Evidência</button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
     async function fetchOutagesTable() {
         try {
-            let url = '/api/outages?limit=50';
+            let url = '/api/outages?limit=500';
             if (customStart) {
                 url += `&start=${encodeURIComponent(customStart)}&end=${encodeURIComponent(customEnd || '')}`;
             }
             const res = await fetch(url);
             const outages = await res.json();
-            const tbody = document.getElementById('outagesTableBody');
 
-            if (!outages || outages.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--accent-green); padding: 25px;">🎉 Nenhuma queda ou instabilidade registrada no período! Conexão 100% estável.</td></tr>`;
-                return;
-            }
+            allFetchedOutages = outages || [];
+            _outagesCache = {};
+            allFetchedOutages.forEach(o => {
+                _outagesCache[o.id] = o;
+            });
 
-            tbody.innerHTML = outages.map(o => {
-                const isOpen = o.status === 'OPEN';
-                const isTotal = (o.outage_type || 'TOTAL') === 'TOTAL';
-
-                let statusBadge = '';
-                if (isOpen) {
-                    statusBadge = `<span class="badge badge-open">🔴 EM ANDAMENTO</span>`;
-                } else {
-                    statusBadge = `<span class="badge badge-closed">CONCLUÍDA</span>`;
-                }
-
-                const typeBadge = isTotal
-                    ? `<span class="badge badge-total">QUEDA TOTAL</span>`
-                    : `<span class="badge badge-partial">PARCIAL / INSTÁVEL</span>`;
-
-                let certBadge = '';
-                if (o.tsa_authority) {
-                    certBadge = ` <span style="background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border: 1px solid rgba(56, 189, 248, 0.4); font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 4px;" title="Carimbado por autoridade pública RFC 3161">🏛️ ${o.tsa_authority}</span>`;
-                }
-
-                const startStr = formatDateTime(o.start_time);
-                const endStr = o.end_time 
-                    ? formatDateTime(o.end_time) 
-                    : '<span style="color:var(--accent-red); font-weight:700;">AGORA (Ao Vivo)</span>';
-
-                let durStr = '--';
-                if (isOpen) {
-                    const elapsed = Math.floor((Date.now() - new Date(o.start_time).getTime()) / 1000);
-                    const m = Math.floor(elapsed / 60);
-                    const s = elapsed % 60;
-                    durStr = `<span id="liveOutageTimerCell" style="color: var(--accent-red); font-weight: 700;">${m}m ${s}s</span>`;
-                } else if (o.duration_seconds !== null && o.duration_seconds !== undefined) {
-                    const sec = Math.round(o.duration_seconds);
-                    durStr = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
-                }
-
-                return `
-                    <tr style="${isOpen ? 'background: rgba(239, 68, 68, 0.08);' : ''}">
-                        <td>${statusBadge}${certBadge}</td>
-                        <td>${typeBadge}</td>
-                        <td><strong>${startStr}</strong></td>
-                        <td>${endStr}</td>
-                        <td><strong>${durStr}</strong></td>
-                        <td style="color: var(--text-secondary); max-width: 280px;">${o.reason}</td>
-                        <td>
-                            <button class="btn-copy-evid" onclick="copySingleOutage('${startStr}', '${o.end_time ? formatDateTime(o.end_time) : 'Em Andamento'}', '${durStr}', '${o.outage_type || 'TOTAL'}', '${(o.reason||'').replace(/'/g, "\\'")}', '${o.tsa_authority || ""}', '${o.record_hash || ""}')">📋 Copiar Evidência</button>
-                        </td>
-                    </tr>
-                `;
-            }).join('');
+            renderOutagesPage();
         } catch (e) {
             console.error("Erro ao carregar tabela de quedas:", e);
         }
     }
 
-    function copySingleOutage(start, end, dur, type, reason, tsa, hash) {
+    function copyOutageById(id) {
+        const o = _outagesCache[id];
+        if (!o) {
+            showToast("Registro de interrupção não encontrado.", "error");
+            return;
+        }
+
         const isp = currentConfig.isp_name || "Claro";
         const clientLine = currentConfig.client_name ? `\nAssinante / Titular: ${currentConfig.client_name}` : "";
         const contractLine = currentConfig.contract_number ? `\nContrato / Código Assinante: ${currentConfig.contract_number}` : "";
         const addressLine = currentConfig.client_address ? `\nEndereço de Instalação: ${currentConfig.client_address}` : "";
-        const tsaLine = tsa ? `\nCarimbo de Tempo Oficial: Certificado por ${tsa} (RFC 3161 - Hora Legal Atômica)` : "";
-        const hashLine = hash ? `\nAssinatura de Integridade: ${hash.substring(0, 16)}... (HMAC SHA-256)` : "";
-        const durText = String(dur).replace(/<[^>]*>?/gm, '').trim();
+        const tsaLine = o.tsa_authority ? `\nCarimbo de Tempo Oficial: Certificado por ${o.tsa_authority} (RFC 3161 - Hora Legal Atômica)` : "";
+        const hashLine = o.record_hash ? `\nAssinatura de Integridade: ${o.record_hash.substring(0, 16)}... (HMAC SHA-256)` : "";
+        
+        let durText = '--';
+        if (o.status === 'OPEN') {
+            const elapsed = Math.floor((Date.now() - new Date(o.start_time).getTime()) / 1000);
+            const m = Math.floor(elapsed / 60);
+            const s = elapsed % 60;
+            durText = m > 0 ? `${m}m ${s}s (Em andamento)` : `${s}s (Em andamento)`;
+        } else if (o.duration_seconds !== null && o.duration_seconds !== undefined) {
+            const sec = Math.round(o.duration_seconds);
+            durText = sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`;
+        }
+
+        const startStr = formatDateTime(o.start_time);
+        const endStr = o.end_time ? formatDateTime(o.end_time) : 'Em Andamento';
+        const typeStr = (o.outage_type === 'PARCIAL') ? 'Instabilidade Severa / Degradação' : 'Queda Total de Conectividade';
 
         const text = `📌 REGISTRO PERICIAL DE INTERRUPÇÃO DE CONEXÃO
 Operadora: ${isp}${clientLine}${contractLine}${addressLine}
-Tipo de Ocorrência: ${type === 'PARCIAL' ? 'Instabilidade Severa / Degradação' : 'Queda Total de Conectividade'}
-Início: ${start}
-Término: ${end}
+Tipo de Ocorrência: ${typeStr}
+Início: ${startStr}
+Término: ${endStr}
 Duração Auditada: ${durText}
-Diagnóstico Técnico: ${reason}${tsaLine}${hashLine}
+Diagnóstico Técnico: ${o.reason || 'Sem diagnóstico'}${tsaLine}${hashLine}
 Base Legal: Arts. 46 a 49 da Resolução ANATEL nº 632/2014 e Art. 22 do CDC.`;
 
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(() => {
-                showToast("📋 Evidência pericial copiada com sucesso!");
-            }).catch(() => fallbackCopy(text));
-        } else {
-            fallbackCopy(text);
-        }
+        copyEvidenceText(text);
     }
 
     // Ações Rápidas
@@ -1952,24 +2599,62 @@ Base Legal: Arts. 46 a 49 da Resolução ANATEL nº 632/2014 e Art. 22 do CDC.`;
         const uptimeVal = sum.uptime_pct !== undefined ? sum.uptime_pct : 100.0;
         document.getElementById('laudoUptime').innerText = `${uptimeVal}%`;
 
-        const downMinVal = sum.total_downtime_min !== undefined ? sum.total_downtime_min : (sum.downtime_minutes !== undefined ? sum.downtime_minutes : 0);
-        document.getElementById('laudoDowntimeMin').innerText = `${downMinVal} min`;
-
         const totalTot = sum.total_outages_count !== undefined ? sum.total_outages_count : (sum.total_outages || 0);
         const partialTot = sum.partial_outages_count !== undefined ? sum.partial_outages_count : (sum.partial_outages || 0);
         const allTot = sum.all_outages_count !== undefined ? sum.all_outages_count : (totalTot + partialTot);
-        document.getElementById('laudoOutagesCount').innerText = `${allTot} (${totalTot} totais, ${partialTot} parciais)`;
+
+        const totalOutagesMin = sum.total_outages_min !== undefined ? sum.total_outages_min : Math.round((sum.total_outages_sec || 0)/60);
+        const partialOutagesMin = sum.partial_outages_min !== undefined ? sum.partial_outages_min : Math.round((sum.partial_outages_sec || 0)/60);
+        const downMinVal = sum.total_downtime_min !== undefined ? sum.total_downtime_min : (sum.downtime_minutes !== undefined ? sum.downtime_minutes : 0);
+
+        if (document.getElementById('laudoTotalOutagesBox')) {
+            document.getElementById('laudoTotalOutagesBox').innerText = totalTot;
+        }
+        if (document.getElementById('laudoTotalOutagesMin')) {
+            document.getElementById('laudoTotalOutagesMin').innerText = totalOutagesMin;
+        }
+        if (document.getElementById('laudoPartialOutagesBox')) {
+            document.getElementById('laudoPartialOutagesBox').innerText = partialTot;
+        }
+        if (document.getElementById('laudoPartialOutagesMin')) {
+            document.getElementById('laudoPartialOutagesMin').innerText = partialOutagesMin;
+        }
+        if (document.getElementById('laudoDowntimeMin')) {
+            document.getElementById('laudoDowntimeMin').innerText = `${downMinVal} min`;
+        }
 
         const avgDownVal = sum.avg_download_mbps !== undefined ? sum.avg_download_mbps : (perf.avg_down !== undefined ? perf.avg_down : 0);
         document.getElementById('laudoAvgDown').innerText = `${avgDownVal} Mbps`;
 
-        // Cálculo de ressarcimento financeiro em R$ (Resolução Anatel 632)
-        const refundEstimate = meta.refund_estimate_reais !== undefined ? meta.refund_estimate_reais : (data.refund_estimate_reais || 0);
+        // Cálculo de ressarcimento financeiro em R$ (Resolução Anatel 632 e CDC)
+        const finComp = data.financial_compensation || {};
+        const refundEstimate = finComp.financial_refund_reais !== undefined ? finComp.financial_refund_reais : (meta.refund_estimate_reais || data.refund_estimate_reais || 0);
         const refundFormatted = `R$ ${Number(refundEstimate).toFixed(2).replace('.', ',')}`;
+
+        const refundTotalOnly = finComp.refund_total_outages_reais !== undefined ? finComp.refund_total_outages_reais : (sum.refund_total_outages_reais || 0);
+        const refundPartialOnly = finComp.refund_partial_instabilities_reais !== undefined ? finComp.refund_partial_instabilities_reais : (sum.refund_partial_instabilities_reais || 0);
+        const regRefund = finComp.regulatory_minimum_refund_reais !== undefined ? finComp.regulatory_minimum_refund_reais : (sum.regulatory_refund_reais || 0);
+        const regDays = finComp.regulatory_days_due !== undefined ? finComp.regulatory_days_due : (sum.regulatory_days_due || 0);
+
         const feeFormatted = monthlyFee > 0 ? `R$ ${monthlyFee.toFixed(2).replace('.', ',')}` : 'não informada';
 
         const elRefund = document.getElementById('laudoRefund');
         if (elRefund) elRefund.innerText = refundFormatted;
+
+        const elRegRefund = document.getElementById('laudoRegulatoryRefund');
+        if (elRegRefund) elRegRefund.innerText = `R$ ${Number(regRefund).toFixed(2).replace('.', ',')}`;
+
+        const elLegalRegRefund = document.getElementById('laudoLegalRegulatoryRefund');
+        if (elLegalRegRefund) elLegalRegRefund.innerText = `R$ ${Number(regRefund).toFixed(2).replace('.', ',')}`;
+
+        const elRegDays = document.getElementById('laudoRegulatoryDays');
+        if (elRegDays) elRegDays.innerText = regDays;
+
+        const elRefundTotalOnly = document.getElementById('laudoRefundTotalOnly');
+        if (elRefundTotalOnly) elRefundTotalOnly.innerText = `R$ ${Number(refundTotalOnly).toFixed(2).replace('.', ',')}`;
+
+        const elRefundPartialOnly = document.getElementById('laudoRefundPartialOnly');
+        if (elRefundPartialOnly) elRefundPartialOnly.innerText = `R$ ${Number(refundPartialOnly).toFixed(2).replace('.', ',')}`;
 
         const elLegalRefund = document.getElementById('laudoLegalRefund');
         if (elLegalRefund) elLegalRefund.innerText = refundFormatted;
@@ -1977,23 +2662,34 @@ Base Legal: Arts. 46 a 49 da Resolução ANATEL nº 632/2014 e Art. 22 do CDC.`;
         const elMonthlyFee = document.getElementById('laudoMonthlyFee');
         if (elMonthlyFee) elMonthlyFee.innerText = feeFormatted;
 
+        const elSpeedBadge = document.getElementById('laudoSpeedStatusBadge');
+        if (elSpeedBadge) {
+            const isCompliant = perf.down_avg_compliant !== undefined ? perf.down_avg_compliant : ((perf.down_compliance_pct || 0) >= 80.0);
+            elSpeedBadge.innerHTML = isCompliant 
+                ? `<span style="color: #16a34a;">CONFORME (${perf.down_compliance_pct || 100}% da meta de 80%)</span>`
+                : `<span style="color: #dc2626;">VIOLAÇÃO REGULATÓRIA (${perf.down_compliance_pct || 0}% da meta de 80%)</span>`;
+        }
+
         // Renderiza tabela de ocorrências no laudo
         const tbody = document.getElementById('laudoOutagesBody');
         const outages = data.outages || [];
         if (outages.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #16a34a; padding: 12px;">Nenhuma ocorrência de interrupção ou instabilidade no período auditado.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #16a34a; padding: 12px;">Nenhuma ocorrência de interrupção ou instabilidade no período auditado. Conexão 100% contínua.</td></tr>`;
         } else {
             tbody.innerHTML = outages.map(o => {
                 const isTotal = (o.outage_type || 'TOTAL') === 'TOTAL';
                 const durStr = o.duration_seconds ? `${Math.round(o.duration_seconds/60)}m (${Math.round(o.duration_seconds)}s)` : 'Em Andamento';
                 const tsaText = o.tsa_authority ? `🏛️ ${o.tsa_authority}` : 'HMAC SHA-256';
+                const tipoBadge = isTotal 
+                    ? `<span style="font-weight:700; color: #dc2626; background: rgba(220, 38, 38, 0.1); padding: 2px 6px; border-radius: 4px;">🔴 QUEDA TOTAL</span>`
+                    : `<span style="font-weight:700; color: #d97706; background: rgba(217, 119, 6, 0.1); padding: 2px 6px; border-radius: 4px;">🟡 INSTABILIDADE</span>`;
                 return `
                     <tr>
                         <td><strong>${formatDateTime(o.start_time)}</strong></td>
-                        <td>${o.end_time ? formatDateTime(o.end_time) : 'Em Aberto'}</td>
+                        <td>${o.end_time ? formatDateTime(o.end_time) : '<span style="color:#dc2626; font-weight:700;">Em Aberto</span>'}</td>
                         <td><strong>${durStr}</strong></td>
-                        <td><span style="font-weight:700; color: ${isTotal ? '#dc2626' : '#d97706'};">${isTotal ? 'TOTAL' : 'PARCIAL'}</span></td>
-                        <td>${o.reason}</td>
+                        <td>${tipoBadge}</td>
+                        <td style="max-width: 250px;">${o.reason}</td>
                         <td style="font-size: 0.7rem; font-family: monospace;">${tsaText}</td>
                     </tr>
                 `;
@@ -2002,13 +2698,20 @@ Base Legal: Arts. 46 a 49 da Resolução ANATEL nº 632/2014 e Art. 22 do CDC.`;
 
         const proofEl = document.getElementById('laudoCryptoProof');
         const verifiedTsa = data.integrity ? data.integrity.tsa_verified_outages : 0;
-        proofEl.innerHTML = `🔒 Prova Pericial de Autenticidade: Algoritmo HMAC SHA-256 encadeado | ${verifiedTsa} carimbos RFC 3161 verificados | Assinatura íntegra. Proibida alteração unilateral.`;
+        proofEl.innerHTML = `🔒 Cadeia de Custódia e Prova de Autenticidade (ABNT NBR ISO/IEC 27037): HMAC SHA-256 encadeado | ${verifiedTsa} carimbos RFC 3161 verificados | Assinatura íntegra e imutável.`;
     }
 
     function downloadLaudoPdf() {
         const element = document.getElementById('laudoToPrint');
         const btn = document.getElementById('btnDownloadPdf');
         const originalText = btn.innerText;
+
+        if (typeof html2pdf === 'undefined') {
+            showToast("Biblioteca PDF indisponível offline. Abrindo diálogo nativo de impressão A4...", "warning");
+            window.print();
+            return;
+        }
+
         btn.innerText = "⏳ Gerando arquivo PDF...";
         btn.disabled = true;
 
@@ -2043,16 +2746,32 @@ Base Legal: Arts. 46 a 49 da Resolução ANATEL nº 632/2014 e Art. 22 do CDC.`;
         try {
             const res = await fetch(url);
             const text = await res.text();
-            navigator.clipboard.writeText(text).then(() => {
-                const btn = document.getElementById('btnCopyLaudo');
+            copyEvidenceText(text);
+            const btn = document.getElementById('btnCopyLaudo');
+            if (btn) {
                 const orig = btn.innerText;
                 btn.innerText = "✅ Texto Copiado!";
-                showToast("📋 Texto completo do laudo pericial copiado!");
                 setTimeout(() => { btn.innerText = orig; }, 2000);
-            }).catch(() => fallbackCopy(text));
+            }
         } catch (e) {
-            showToast("Erro ao copiar texto do laudo.", "error");
+            showToast("Erro ao carregar texto do laudo.", "error");
         }
+    }
+
+    // Download do Dossiê Pericial Completo (.ZIP)
+    function downloadDossierZip() {
+        showToast("📦 Compilando Dossiê Pericial Completo (.ZIP)... Aguarde.", "info");
+        const hours = currentPeriodHours || 72;
+        let url = `/api/export_dossier?hours=${hours}`;
+        if (customStart && customEnd) {
+            url += `&start=${encodeURIComponent(customStart)}&end=${encodeURIComponent(customEnd)}`;
+        }
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', `Dossie_Pericial_NetMon_${new Date().toISOString().substring(0,10)}.zip`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
     }
 
     // Modal de Configuração e Dados Contratuais
@@ -2065,11 +2784,52 @@ Base Legal: Arts. 46 a 49 da Resolução ANATEL nº 632/2014 e Art. 22 do CDC.`;
         document.getElementById('cfgDown').value = currentConfig.contracted_download_mbps || 500;
         document.getElementById('cfgUp').value = currentConfig.contracted_upload_mbps || 250;
         document.getElementById('cfgHeartbeat').value = currentConfig.heartbeat_url || "";
+        
+        // Webhooks e Notificações
+        const discordEl = document.getElementById('cfgDiscordWebhook');
+        if (discordEl) discordEl.value = currentConfig.discord_webhook_url || "";
+        const tgTokenEl = document.getElementById('cfgTelegramToken');
+        if (tgTokenEl) tgTokenEl.value = currentConfig.telegram_bot_token || "";
+        const tgChatEl = document.getElementById('cfgTelegramChatId');
+        if (tgChatEl) tgChatEl.value = currentConfig.telegram_chat_id || "";
+        const notifEnEl = document.getElementById('cfgNotificationsEnabled');
+        if (notifEnEl) notifEnEl.value = currentConfig.notifications_enabled !== "0" ? "1" : "0";
+        const speedThEl = document.getElementById('cfgSpeedThreshold');
+        if (speedThEl) speedThEl.value = currentConfig.speed_alert_threshold_pct || "40";
+
         document.getElementById('configModal').style.display = 'flex';
     }
 
     function closeConfigModal() {
         document.getElementById('configModal').style.display = 'none';
+    }
+
+    async function testWebhooks() {
+        const btn = document.getElementById('btnTestWebhooks');
+        const orig = btn ? btn.innerText : "";
+        if (btn) {
+            btn.innerText = "⏳ Testando conexões...";
+            btn.disabled = true;
+        }
+        try {
+            const resp = await fetch('/api/test_notification', { method: 'POST' });
+            const data = await resp.json();
+            let msgs = [];
+            if (data.discord) {
+                msgs.push(`Discord: ${data.discord.ok ? '✅ Enviado com sucesso' : '❌ ' + data.discord.message}`);
+            }
+            if (data.telegram) {
+                msgs.push(`Telegram: ${data.telegram.ok ? '✅ Enviado com sucesso' : '❌ ' + data.telegram.message}`);
+            }
+            showToast(msgs.join(" | ") || "Nenhum canal configurado.", "info");
+        } catch (e) {
+            showToast("Erro ao testar envio de notificações: " + e, "error");
+        } finally {
+            if (btn) {
+                btn.innerText = orig;
+                btn.disabled = false;
+            }
+        }
     }
 
     async function saveConfig() {
@@ -2081,7 +2841,12 @@ Base Legal: Arts. 46 a 49 da Resolução ANATEL nº 632/2014 e Art. 22 do CDC.`;
             isp_name: document.getElementById('cfgIspName').value.trim(),
             contracted_download_mbps: document.getElementById('cfgDown').value,
             contracted_upload_mbps: document.getElementById('cfgUp').value,
-            heartbeat_url: document.getElementById('cfgHeartbeat').value.trim()
+            heartbeat_url: document.getElementById('cfgHeartbeat').value.trim(),
+            discord_webhook_url: (document.getElementById('cfgDiscordWebhook') ? document.getElementById('cfgDiscordWebhook').value.trim() : ""),
+            telegram_bot_token: (document.getElementById('cfgTelegramToken') ? document.getElementById('cfgTelegramToken').value.trim() : ""),
+            telegram_chat_id: (document.getElementById('cfgTelegramChatId') ? document.getElementById('cfgTelegramChatId').value.trim() : ""),
+            notifications_enabled: (document.getElementById('cfgNotificationsEnabled') ? document.getElementById('cfgNotificationsEnabled').value : "1"),
+            speed_alert_threshold_pct: (document.getElementById('cfgSpeedThreshold') ? document.getElementById('cfgSpeedThreshold').value.trim() : "40")
         };
         try {
             await fetch('/api/config', {

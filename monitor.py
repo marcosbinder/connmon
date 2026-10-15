@@ -12,7 +12,7 @@ import socket
 import sys
 import threading
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 # Garante codificação UTF-8 mesmo em terminais Windows legados (cp1252)
@@ -25,6 +25,17 @@ if hasattr(sys.stdout, "reconfigure"):
 import db
 import speed_tester
 
+# Módulos opcionais — não disponíveis em todas as instalações (ex: VPS mínima)
+try:
+    import traceroute_tracer
+except ImportError:
+    traceroute_tracer = None  # type: ignore
+
+try:
+    import notifier
+except ImportError:
+    notifier = None  # type: ignore
+
 # Alvos confiáveis para ping redundante
 PING_TARGETS = ["1.1.1.1", "8.8.8.8"]
 DNS_CHECK_DOMAIN = "google.com"
@@ -33,6 +44,7 @@ DNS_CHECK_DOMAIN = "google.com"
 _speed_lock = threading.Lock()
 _last_speed_test_time = 0.0
 _is_running = True
+_recent_latencies: List[float] = []
 
 
 def tcp_ping(host: str, port: int = 53, timeout: float = 1.2) -> Optional[float]:
@@ -72,7 +84,7 @@ def ping_host(host: str, count: int = 3, timeout_ms: int = 1000) -> Dict[str, An
             errors="replace",
             timeout=max(4.0, (timeout_ms / 1000.0 * count) + 1.5)
         )
-        
+
         # Extrai perda de pacotes (PT e EN)
         loss_match = re.search(r"(\d+(?:\.\d+)?)%\s*(?:packet loss|loss|perda|de perda)", res.stdout, re.IGNORECASE)
         packet_loss = float(loss_match.group(1)) if loss_match else None
@@ -104,9 +116,18 @@ def ping_host(host: str, count: int = 3, timeout_ms: int = 1000) -> Dict[str, An
 
         is_online = res.returncode == 0 and packet_loss < 100.0
 
-        # Fallback 3: Se ping respondeu mas latencia nao foi parseada, usa TCP handshake
+        # Fallback 3: Se ping respondeu mas latência não foi parseada, usa TCP handshake
         if is_online and avg_latency is None:
             avg_latency = tcp_ping(host, 53)
+
+        # Fallback 4: Se ping falhou (ex: restrição de socket ICMP / cap_net_raw em VPS Linux ou Docker),
+        # verifica se o host responde com sucesso via TCP handshake (porta 53 - DNS neutro)
+        if not is_online:
+            tcp_lat = tcp_ping(host, 53)
+            if tcp_lat is not None:
+                is_online = True
+                avg_latency = tcp_lat
+                packet_loss = 0.0
 
         return {
             "online": is_online,
@@ -255,11 +276,34 @@ def trigger_async_speedtest(reason: str):
                 upload_mbps=res.get("upload_mbps"),
                 ping_ms=res.get("ping_ms"),
                 status=res.get("status", "FAILED"),
-                error_message=res.get("error_message")
+                error_message=res.get("error_message"),
+                loaded_ping_ms=res.get("loaded_ping_ms"),
+                bufferbloat_grade=res.get("bufferbloat_grade")
             )
 
             if res.get("status") == "SUCCESS":
-                print(f"[{now_str}] [SPEED-OK] Download: {res.get('download_mbps')} Mbps | Upload: {res.get('upload_mbps')} Mbps (Ping: {res.get('ping_ms')} ms)")
+                bb_info = f" | Bufferbloat: {res.get('bufferbloat_grade')}" if res.get("bufferbloat_grade") else ""
+                print(f"[{now_str}] [SPEED-OK] Download: {res.get('download_mbps')} Mbps | Upload: {res.get('upload_mbps')} Mbps (Ping: {res.get('ping_ms')} ms{bb_info})")
+
+                # Alerta regulatório se velocidade for inferior a 40% da meta contratada
+                try:
+                    c_down = float(db.get_config("contracted_download_mbps", "500") or 500)
+                    c_up = float(db.get_config("contracted_upload_mbps", "250") or 250)
+                    down_val = res.get("download_mbps")
+                    if down_val is not None and c_down > 0:
+                        if down_val < (c_down * 0.40):
+                            if notifier is not None:
+                                notifier.notify_speed_drop(
+                                    delivered_down=down_val,
+                                    contracted_down=c_down,
+                                    delivered_up=res.get("upload_mbps") or 0.0,
+                                    contracted_up=c_up,
+                                    bufferbloat_grade=res.get("bufferbloat_grade", "A"),
+                                    isp_name=db.get_config("isp_name", "Claro")
+                                )
+                except Exception as alert_err:
+                    print(f"[{now_str}] [AVISO] Falha ao avaliar alerta de velocidade: {alert_err}")
+
             else:
                 print(f"[{now_str}] [SPEED-ERRO] Falha no teste de velocidade: {res.get('error_message')}")
         except Exception as db_err:
@@ -317,7 +361,28 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
             "details": f"exception={e}"
         }
 
-    # Estágio 2: Persistência da telemetria de ping
+    prev_status = last_state.get("status", "UNKNOWN")
+    curr_status = check["status"]
+
+    # Confirmação imediata para filtrar soluços pontuais transitórios de 1 único ping
+    if curr_status != "ONLINE" and prev_status == "ONLINE":
+        time.sleep(1.5)
+        recheck = check_connectivity()
+        if recheck["status"] == "ONLINE":
+            # Normalizou de imediato: absorve oscilação transitória
+            check = recheck
+            curr_status = "ONLINE"
+        else:
+            # Confirmada instabilidade ou queda: se qualquer uma foi OFFLINE, eleva para OFFLINE
+            if recheck["status"] == "OFFLINE" or curr_status == "OFFLINE":
+                curr_status = "OFFLINE"
+                check["status"] = "OFFLINE"
+                check["is_online"] = False
+            else:
+                curr_status = "INSTABLE"
+                check["status"] = "INSTABLE"
+
+    # Estágio 2: Persistência da telemetria de ping (sempre consistente com o status final)
     try:
         db.record_ping(
             is_online=check["is_online"],
@@ -338,24 +403,22 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Estágio 4: Máquina de estados de quedas (outages)
-    prev_status = last_state.get("status", "UNKNOWN")
-    curr_status = check["status"]
-
-    # Confirmação imediata para filtrar soluços pontuais transitórios de 1 único ping
-    if curr_status != "ONLINE" and prev_status == "ONLINE":
-        time.sleep(1.5)
-        recheck = check_connectivity()
-        if recheck["status"] == "ONLINE":
-            check = recheck
-            curr_status = "ONLINE"
-
+    # Estágio 4: Máquina de estados de quedas (outages), Auditoria de Rota e Alertas
     try:
         if curr_status == "OFFLINE":
             reason = f"Perda total de pacotes ({check['packet_loss_pct']}%) e falha nos alvos DNS"
             outage_id = db.start_outage(reason, outage_type="TOTAL")
             if prev_status != "OFFLINE":
                 print(f"\n[{now_str}] [!] [QUEDA TOTAL DETECTADA] Conexão caiu. Registrado como Queda #{outage_id}")
+                if traceroute_tracer is not None:
+                    traceroute_tracer.trigger_async_traceroute(reason="outage_total", outage_id=outage_id, force=True)
+                if notifier is not None:
+                    notifier.notify_outage_started(
+                        outage_type="TOTAL",
+                        reason=reason,
+                        client_name=db.get_config("client_name"),
+                        isp_name=db.get_config("isp_name", "Claro")
+                    )
 
         elif curr_status == "INSTABLE":
             active = db.get_active_outage()
@@ -364,11 +427,33 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
                 outage_id = db.start_outage(reason, outage_type="PARCIAL")
                 if prev_status == "ONLINE":
                     print(f"\n[{now_str}] [!] [INSTABILIDADE DETECTADA] Conexão degradada. Registrado como Interrupção Parcial #{outage_id}")
+                    if traceroute_tracer is not None:
+                        traceroute_tracer.trigger_async_traceroute(reason="outage_instable", outage_id=outage_id, force=True)
+                    if notifier is not None:
+                        notifier.notify_outage_started(
+                            outage_type="PARCIAL",
+                            reason=reason,
+                            client_name=db.get_config("client_name"),
+                            isp_name=db.get_config("isp_name", "Claro")
+                        )
             if (time.time() - _last_speed_test_time) > 180:
                 print(f"[{now_str}] [!] Instabilidade detectada. Disparando teste de velocidade investigativo...")
                 trigger_async_speedtest(reason="instability_detected")
 
         elif curr_status == "ONLINE":
+            # Detecção de picos de latência (> 100ms acima da média móvel recente)
+            if check.get("latency_ms") is not None:
+                cur_lat = check["latency_ms"]
+                if len(_recent_latencies) >= 3:
+                    m_avg = sum(_recent_latencies) / len(_recent_latencies)
+                    if (cur_lat - m_avg) >= 100.0:
+                        print(f"\n[{now_str}] [!] [PICO DE LATÊNCIA DETECTADO] {cur_lat}ms vs média {round(m_avg, 1)}ms. Disparando Traceroute Forense...")
+                        if traceroute_tracer is not None:
+                            traceroute_tracer.trigger_async_traceroute(reason="latency_spike")
+                _recent_latencies.append(cur_lat)
+                if len(_recent_latencies) > 20:
+                    _recent_latencies.pop(0)
+
             active = db.get_active_outage()
             if active or prev_status in ("OFFLINE", "INSTABLE"):
                 closed = db.close_active_outage()
@@ -377,6 +462,21 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
                     o_type = closed.get("outage_type", "TOTAL")
                     tipo_lbl = "Queda Total" if o_type == "TOTAL" else "Instabilidade Parcial"
                     print(f"\n[{now_str}] [+] [RECUPERADO] Conexão normalizada após {dur}s ({round(dur/60, 1)} min) de {tipo_lbl}.")
+
+                    try:
+                        monthly_fee = float(db.get_config("monthly_fee", "0.0") or 0.0)
+                        ref_val = round((dur / 2592000.0) * monthly_fee, 2) if monthly_fee > 0 else 0.0
+                    except Exception:
+                        ref_val = 0.0
+
+                    if notifier is not None:
+                        notifier.notify_outage_ended(
+                            outage_type=o_type,
+                            duration_seconds=dur,
+                            refund_reais=ref_val,
+                            client_name=db.get_config("client_name"),
+                            isp_name=db.get_config("isp_name", "Claro")
+                        )
                     trigger_async_speedtest(reason="recovery")
     except Exception as e:
         print(f"[{now_str}] [AVISO] Falha ao atualizar transição de queda no banco: {e}")
@@ -390,7 +490,7 @@ def monitor_step(last_state: Dict[str, Any]) -> Dict[str, Any]:
     return check
 
 
-def run_monitor_loop(ping_interval: int = 30, speed_interval_min: int = 10):
+def run_monitor_loop(ping_interval: int = 30, speed_interval_min: int = 5):
     """
     Loop principal do serviço de monitoramento com amostragem adaptativa de alta resolução.
     Em condições estáveis: checa a cada 30 segundos.
@@ -434,7 +534,7 @@ def run_monitor_loop(ping_interval: int = 30, speed_interval_min: int = 10):
         try:
             last_state = monitor_step(last_state)
 
-            # Checa se passou o intervalo programado de 10 min de teste de velocidade
+            # Checa se passou o intervalo programado de teste de velocidade
             if (time.time() - last_scheduled_speed) >= (speed_interval_min * 60):
                 trigger_async_speedtest(reason=f"scheduled_{speed_interval_min}min")
                 last_scheduled_speed = time.time()
@@ -466,7 +566,7 @@ def stop_monitor():
 
 if __name__ == "__main__":
     try:
-        run_monitor_loop(ping_interval=30, speed_interval_min=10)
+        run_monitor_loop(ping_interval=30, speed_interval_min=5)
     except KeyboardInterrupt:
         print("\nEncerrando monitor com segurança...")
         stop_monitor()

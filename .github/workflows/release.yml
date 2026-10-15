@@ -1,0 +1,61 @@
+name: Release & Packaging
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Release Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build Wheel and Source Distribution
+        run: |
+          python -m build
+
+      - name: Build Portable Python Application (.pyz)
+        run: |
+          mkdir -p pyz_stage
+          cp *.py pyz_stage/
+          cp -r static pyz_stage/
+          cp -r cloudflare_probe pyz_stage/
+          echo 'from run import main; main()' > pyz_stage/__main__.py
+          python -m zipapp pyz_stage -m "__main__:main" -o dist/connmon.pyz
+
+      - name: Package Standalone Archives (.zip and .tar.gz)
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          PKG_NAME="connmon-${TAG_NAME}"
+          mkdir -p "${PKG_NAME}"
+          cp -r *.py static cloudflare_probe README.md README.pt-BR.md LICENSE CHANGELOG.md pyproject.toml connmon.service start_linux.sh start_windows.bat "${PKG_NAME}/"
+          zip -r "dist/${PKG_NAME}-standalone.zip" "${PKG_NAME}"
+          tar -czvf "dist/${PKG_NAME}-standalone.tar.gz" "${PKG_NAME}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/*.zip
+            dist/connmon.pyz
+          generate_release_notes: true
+          draft: false
+          prerelease: false
