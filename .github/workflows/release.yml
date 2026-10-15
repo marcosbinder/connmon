@@ -37,7 +37,7 @@ jobs:
           cp -r static pyz_stage/
           cp -r cloudflare_probe pyz_stage/
           echo 'from run import main; main()' > pyz_stage/__main__.py
-          python -m zipapp pyz_stage -m "__main__:main" -o dist/connmon.pyz
+          python -m zipapp pyz_stage -o dist/connmon.pyz
 
       - name: Package Standalone Archives (.zip and .tar.gz)
         run: |
